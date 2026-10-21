@@ -176,17 +176,24 @@ func transcribe(_ input: URL, progress: @escaping (Double) -> Void) throws -> St
 }
 
 struct ContentView: View {
-    @State private var transcript = ""
+    @State private var original = ""
+    @State private var polished: String?
+    @State private var showOriginal = false
     @State private var status = "Drop an .m4a or .mp3 file here"
     @State private var busy = false
     @State private var fraction = 0.0
+    @State private var polishing = false
+    @State private var polishDone = 0
+    @State private var polishTotal = 0
     @State private var targeted = false
     @State private var sourceName = "transcript"
     @StateObject private var model = ModelStore()
+    @StateObject private var local = LocalModels()
 
     var body: some View {
         VStack(spacing: 12) {
             modelBanner
+            polishPicker
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
                     .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [6]))
@@ -199,29 +206,50 @@ struct ContentView: View {
                             Text("\(Int(fraction * 100))%").monospacedDigit().foregroundColor(.secondary)
                         }
                     }
+                    if polishing {
+                        HStack(spacing: 8) {
+                            if polishTotal >= 2 {
+                                ProgressView(value: Double(polishDone), total: Double(polishTotal))
+                                Text("\(Int(Double(polishDone) / Double(polishTotal) * 100))%")
+                                    .monospacedDigit().foregroundColor(.secondary)
+                            } else {
+                                ProgressView().controlSize(.small)
+                            }
+                        }
+                    }
                 }
                 .padding(.horizontal, 16)
             }
-            .frame(height: 80)
-            TextEditor(text: $transcript)
+            .frame(height: polishing ? 118 : 80)
+            TextEditor(text: editorText)
                 .font(.body)
                 .border(Color.secondary.opacity(0.3))
+                .disabled(polishing)
             HStack {
-                if !transcript.isEmpty && !busy {
+                if !shown.isEmpty && !busy {
                     Text("\(wordCount) \(wordCount == 1 ? "word" : "words")")
                         .foregroundColor(.secondary)
                         .monospacedDigit()
                 }
+                if polished != nil && !busy {
+                    Picker("", selection: $showOriginal) {
+                        Text("Polished").tag(false)
+                        Text("As transcribed").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 230)
+                }
                 Spacer()
                 Button("Copy") {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(transcript, forType: .string)
-                }.disabled(transcript.isEmpty)
-                Button("Save as .txt…") { save() }.disabled(transcript.isEmpty)
+                    NSPasteboard.general.setString(shown, forType: .string)
+                }.disabled(shown.isEmpty)
+                Button("Save as .txt…") { save() }.disabled(shown.isEmpty)
             }
         }
         .padding(16)
-        .frame(minWidth: 520, minHeight: 420)
+        .frame(minWidth: 560, minHeight: 460)
         .onDrop(of: [.fileURL], isTargeted: $targeted) { providers in
             guard let p = providers.first else { return false }
             _ = p.loadObject(ofClass: URL.self) { url, _ in
@@ -231,8 +259,52 @@ struct ContentView: View {
         }
     }
 
+    /// The text on show: the polished version once there is one, unless the original is chosen.
+    var shown: String { (showOriginal || polished == nil) ? original : polished! }
+
+    var editorText: Binding<String> {
+        Binding(get: { shown }, set: { value in
+            if showOriginal || polished == nil { original = value } else { polished = value }
+        })
+    }
+
     var wordCount: Int {
-        transcript.split(whereSeparator: \.isWhitespace).count
+        shown.split(whereSeparator: \.isWhitespace).count
+    }
+
+    struct PickerOption: Identifiable { let id: String; let label: String }
+
+    var pickerOptions: [PickerOption] {
+        var options = local.found.map { PickerOption(id: $0.id, label: $0.label) }
+        if !local.selectedID.isEmpty && !options.contains(where: { $0.id == local.selectedID }) {
+            let name = local.selectedID.replacingOccurrences(of: "|", with: ": ")
+            options.append(PickerOption(id: local.selectedID, label: name + " (not running)"))
+        }
+        return options
+    }
+
+    @ViewBuilder var polishPicker: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("Polish with:").foregroundColor(.secondary)
+                Picker("", selection: $local.selectedID) {
+                    Text("None").tag("")
+                    ForEach(pickerOptions) { Text($0.label).tag($0.id) }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 340)
+                Button { local.refresh() } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Look for local model servers again")
+                if local.searching { ProgressView().controlSize(.small) }
+                Spacer()
+            }
+            .disabled(busy)
+            if local.found.isEmpty && !local.searching {
+                Text("No local model found (LM Studio, Ollama or llama.cpp). Start one and press refresh to have transcripts polished and divided into paragraphs. Everything stays on this Mac.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
     }
 
     @ViewBuilder var modelBanner: some View {
@@ -264,7 +336,10 @@ struct ContentView: View {
         guard model.state == .ready else { status = "The speech model is not ready yet; drop the file again when it is."; return }
         guard !busy else { return }
         busy = true
-        transcript = ""
+        original = ""
+        polished = nil
+        showOriginal = false
+        polishing = false
         sourceName = url.deletingPathExtension().lastPathComponent
         fraction = 0
         status = "Transcribing \(url.lastPathComponent)"
@@ -273,13 +348,52 @@ struct ContentView: View {
                 try transcribe(url) { f in DispatchQueue.main.async { fraction = f } }
             }
             DispatchQueue.main.async {
-                busy = false
                 switch result {
-                case .success(let t): transcript = t; status = "Done: \(url.lastPathComponent). Drop another file to continue."
-                case .failure(let e): status = "Error: \(e.localizedDescription)"
+                case .success(let text):
+                    original = text
+                    Task { await polishIfChosen(url, text: text) }
+                case .failure(let e):
+                    busy = false
+                    status = "Error: \(e.localizedDescription)"
                 }
             }
         }
+    }
+
+    /// The second pass: runs only when a local model has been chosen.
+    func polishIfChosen(_ url: URL, text: String) async {
+        let done = "Done: \(url.lastPathComponent)."
+        guard !local.selectedID.isEmpty, !text.isEmpty else {
+            busy = false
+            status = done + " Drop another file to continue."
+            return
+        }
+        let models = await LocalLLM.discover()
+        local.found = models
+        guard let chosen = models.first(where: { $0.id == local.selectedID }) else {
+            busy = false
+            status = done + " The chosen local model is not running, so the text is as transcribed."
+            return
+        }
+        polishDone = 0
+        polishTotal = LocalLLM.chunks(of: text).count
+        polishing = true
+        status = "Polishing with \(chosen.label)"
+        do {
+            let (text, kept) = try await LocalLLM.polish(text, with: chosen) { d, n in
+                polishDone = d
+                polishTotal = n
+            }
+            polished = text
+            status = done + " Polished with \(chosen.label)."
+            if kept > 0 {
+                status += " \(kept) of \(polishTotal) sections are as transcribed, because the model's answer did not match the text."
+            }
+        } catch {
+            status = done + " Polishing failed (\(error.localizedDescription)), so the text is as transcribed."
+        }
+        polishing = false
+        busy = false
     }
 
     func save() {
@@ -287,7 +401,7 @@ struct ContentView: View {
         panel.allowedContentTypes = [.plainText]
         panel.nameFieldStringValue = sourceName + ".txt"
         if panel.runModal() == .OK, let url = panel.url {
-            do { try transcript.write(to: url, atomically: true, encoding: .utf8) }
+            do { try shown.write(to: url, atomically: true, encoding: .utf8) }
             catch { status = "Save failed: \(error.localizedDescription)" }
         }
     }

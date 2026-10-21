@@ -35,6 +35,12 @@ open Transcriber.app
 
 `build.sh` first builds a self-contained `whisper-cli` from the pinned whisper.cpp release (`scripts/build-whisper`) and bundles it in the app. The app decodes audio with the system `afconvert` and runs the bundled `whisper-cli` as a separate process.
 
+## Polishing with a local model
+
+If LM Studio (port 1234), Ollama (port 11434) or llama.cpp's `llama-server` (port 8080) is running on the same Mac, the app lists its models in the "Polish with" menu. Choose one, and each later transcription gets a second pass: the model adds punctuation, corrects clear mishearings, removes stutters and divides the text into paragraphs. The second pass has its own progress bar (a spinner when the text is short enough to need only one request). A "Polished / As transcribed" switch shows either version, and Save and Copy use the one on show. The default is "None", and the choice is remembered.
+
+The app contacts only `127.0.0.1`; the transcript never leaves the Mac. Text is sent in pieces of about 450 words so that small context windows suffice. A piece whose answer is more than a fifth longer or shorter than the original is not trusted, and that piece is left as transcribed.
+
 ## Configuration
 
 There is no configuration file. The speech model is stored at `~/Library/Application Support/Transcriber/ggml-small.bin`; delete it to have the app download it again.

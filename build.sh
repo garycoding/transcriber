@@ -12,12 +12,14 @@ rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 ./scripts/build-whisper
 cp build/whisper/whisper-cli "$APP/Contents/Resources/whisper-cli"
 cp build/whisper/LICENSE "$APP/Contents/Resources/whisper.cpp-LICENSE.txt"
+cp brand/app-icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 swiftc -O -target arm64-apple-macos13.0 -parse-as-library App.swift LocalLLM.swift -o "$APP/Contents/MacOS/Transcriber"
 cat > "$APP/Contents/Info.plist" <<P
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleName</key><string>Transcriber</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleExecutable</key><string>Transcriber</string>
 <key>CFBundleIdentifier</key><string>local.gary.transcriber</string>
 <key>CFBundlePackageType</key><string>APPL</string>

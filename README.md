@@ -5,11 +5,13 @@ SPDX-License-Identifier: CC-BY-4.0
 
 # Transcriber
 
-A small macOS app: drop an .m4a or .mp3 file onto its window and it transcribes the audio locally with whisper.cpp, shows the transcript, and saves it as a .txt file. No audio leaves the machine.
+A small macOS app: drop an audio or video file onto its window and it transcribes it locally with whisper.cpp, plays it back with the text following along, and can polish and summarise the text with a local language model. Nothing leaves the machine.
+
+Download: https://garycoding.github.io/transcriber/downloads/
 
 ## Status
 
-Version 0.1.0, not yet released. Verified: the transcription path on a generated .m4a, and the first-launch model download with its checksum. Not yet verified: dragging a file onto the window, .mp3 input and the save dialog.
+Version 0.5.1, released. The newest version and its installer are on the [download page](https://garycoding.github.io/transcriber/downloads/) and the [Releases](https://github.com/garycoding/transcriber/releases) page.
 
 ## Formats
 
@@ -18,6 +20,8 @@ Audio: mp3, m4a, aac, wav, aiff, caf, flac, ac3, mp2. Video: mp4, mov, m4v, 3gp,
 ## Install
 
 Apple silicon Macs only, macOS 13 or later.
+
+The [download page](https://garycoding.github.io/transcriber/downloads/) gives these steps for readers who are not developers.
 
 1. Download `Transcriber-<version>-macos.dmg` from the [Releases](https://github.com/garycoding/transcriber/releases) page, open it, and drag `Transcriber.app` onto the Applications shortcut.
 2. The app is not signed with an Apple Developer ID, so macOS quarantines the download. Clear that once in Terminal:

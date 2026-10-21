@@ -410,12 +410,16 @@ struct ContentView: View {
     func pane<Content: View>(_ title: String, text: String, complete: Bool, fileName: String, note: String? = nil,
                              @ViewBuilder content: () -> Content) -> some View {
         let count = text.split(whereSeparator: \.isWhitespace).count
+        let body = content()
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title).font(.headline)
                 if let note { Text(note).font(.caption).foregroundColor(.orange) }
             }
-            content().frame(minHeight: 80, maxHeight: .infinity).border(Color.secondary.opacity(0.3))
+            GeometryReader { g in body.frame(width: g.size.width, height: g.size.height) }
+                .frame(minHeight: 80, maxHeight: .infinity)
+                .clipped()
+                .border(Color.secondary.opacity(0.3))
             HStack {
                 if !text.isEmpty && complete {
                     Text("\(count) \(count == 1 ? "word" : "words")")

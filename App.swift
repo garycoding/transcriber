@@ -816,7 +816,11 @@ struct ContentView: View {
                     summaryModelLabel = info.summary?.model ?? ""
                     summaryVisible = !summaryBody.isEmpty
                     showSummaryTab = false
-                    status = "Opened \(zip.lastPathComponent), saved \(info.created). Discard it to open or transcribe another file."
+                    var saved = info.created
+                    if let date = ISO8601DateFormatter().date(from: info.created) {
+                        saved = date.formatted(date: .abbreviated, time: .shortened)
+                    }
+                    status = "Opened \(zip.lastPathComponent), saved \(saved). Discard it to open or transcribe another file."
                 }
             }
         }

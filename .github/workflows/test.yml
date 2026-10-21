@@ -1,0 +1,25 @@
+name: Test
+
+# The build is the test: Transcriber has no test suite, so the required check
+# is that the app compiles and signs on a macOS runner.
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build Transcriber.app
+        run: ./build.sh
+      - name: The app and its version are present
+        run: |
+          test -x Transcriber.app/Contents/MacOS/Transcriber
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Transcriber.app/Contents/Info.plist)" = "$(tr -d '[:space:]' < VERSION.txt)"

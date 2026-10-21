@@ -1,0 +1,7 @@
+targets = ["installers"]
+dev = false
+header = "# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>\n# SPDX-License-Identifier: AGPL-3.0-or-later\n\n"
+
+[[slots]]
+job = "installers"
+reason = "one macOS build with swiftc and ditto, not electron-builder; it keeps the installers-macos artifact contract"

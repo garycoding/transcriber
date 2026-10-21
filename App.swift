@@ -496,10 +496,12 @@ struct ContentView: View {
                 if local.searching { ProgressView().controlSize(.small) }
                 Spacer()
                 Button("Summarise") { startSummary() }
-                    .disabled(original.isEmpty || local.selectedID.isEmpty || busy)
-                    .help(local.selectedID.isEmpty
-                          ? "Choose a local model first"
-                          : "Write a one-line description and a summary of the transcription, using the chosen model")
+                    .disabled(original.isEmpty || local.selectedID.isEmpty || busy || summaryVisible)
+                    .help(summaryVisible
+                          ? "This transcription has been summarised. Discard it to start again."
+                          : local.selectedID.isEmpty
+                              ? "Choose a local model first"
+                              : "Write a one-line description and a summary of the transcription, using the chosen model")
             }
             .disabled(busy)
             if local.found.isEmpty && !local.searching {

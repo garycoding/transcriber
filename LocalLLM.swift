@@ -31,7 +31,8 @@ enum LocalLLM {
         if you are unsure, keep the original word. \
         Remove stutters and accidental repeats such as "the the", and divide the text into paragraphs where the topic or the thought changes; \
         let the text itself decide how long each paragraph is. \
-        Keep notes about sounds, in brackets or parentheses, such as [LAUGHTER], (audience laughing) or [INAUDIBLE], exactly as they are and where they are. \
+        Keep any notes about sounds that are already in the text, in brackets or parentheses, such as [LAUGHTER], (audience laughing) or [INAUDIBLE], exactly as they are and where they are. \
+        Never write a note of your own, and never replace the speaker's words with one: if the speaker says "inaudible", write the word. \
         Do not summarise, shorten, add, explain or comment. \
         Write plain text only: no LaTeX, no Markdown, no symbols or special formatting. Where a formula is spoken, write it out as the words that were said. \
         Write a blank line between paragraphs. \(edges)

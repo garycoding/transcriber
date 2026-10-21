@@ -27,9 +27,11 @@ enum LocalLLM {
             : "The text begins at the start of a sentence and ends at the end of a sentence."
         return """
         You edit machine-made transcripts of speech. Keep the speaker's words and meaning. \
-        Add correct punctuation and capitalisation, correct words that are clearly misheard when the context makes the right word certain, \
-        remove stutters and accidental repeats such as "the the", and divide the text into paragraphs where the topic or the thought changes; \
+        Add correct punctuation and capitalisation. Correct a word only when it is not a real word, or when the sentence makes no sense without the change; \
+        if you are unsure, keep the original word. \
+        Remove stutters and accidental repeats such as "the the", and divide the text into paragraphs where the topic or the thought changes; \
         let the text itself decide how long each paragraph is. \
+        Keep notes about sounds, in brackets or parentheses, such as [LAUGHTER], (audience laughing) or [INAUDIBLE], exactly as they are and where they are. \
         Do not summarise, shorten, add, explain or comment. \
         Write plain text only: no LaTeX, no Markdown, no symbols or special formatting. Where a formula is spoken, write it out as the words that were said. \
         Write a blank line between paragraphs. \(edges)
@@ -168,23 +170,23 @@ enum LocalLLM {
     /// last two words must match and most of the last ten be found. Reading stops at the first
     /// paragraph that does not begin where the last one ended, whose end cannot be found, or whose
     /// length differs from the text it covers by more than 30%. `owner` maps each token to its word.
-    static func align(_ paragraphs: [String], wtoks: [String], owner: [Int]) -> [(text: String, endWord: Int)] {
+    static func align(_ paragraphs: [String], wtoks: [String], owner: [Int], final: Bool = false) -> [(text: String, endWord: Int)] {
         var result: [(text: String, endWord: Int)] = []
         var prev = 0
         for text in paragraphs {
             let p = tokens(text)
-            guard p.count >= 3, prev < wtoks.count else { break }
+            guard p.count >= 1, prev < wtoks.count else { break }
             let head = p.prefix(4)
             let near = Set(wtoks[prev..<min(prev + 10, wtoks.count)])
             guard head.filter({ near.contains($0) }).count >= min(2, head.count) else { break }
-            let lo = max(prev + 2, prev + Int(0.7 * Double(p.count)) - 1)
+            let lo = max(prev + min(p.count, 3) - 1, prev + Int(0.7 * Double(p.count)) - 1)
             let hi = min(wtoks.count - 1, prev + Int(1.35 * Double(p.count)) + 2)
             guard lo <= hi else { break }
             let tail = Array(p.suffix(min(10, p.count)))
             var best = -1
             var bestScore = -1.0
             var bestDistance = Int.max
-            for exact in [3, 2] {
+            for exact in Array(Set([min(p.count, 3), min(p.count, 2)])).sorted(by: >) {
                 for j in lo...hi where j - exact + 1 >= prev {
                     var matches = true
                     for t in 0..<exact where wtoks[j - t] != p[p.count - 1 - t] { matches = false; break }
@@ -204,6 +206,19 @@ enum LocalLLM {
             guard ratio >= 0.7, ratio <= 1.3 else { break }
             result.append((text, owner[best]))
             prev = best + 1
+        }
+        // The last window of the text: an answer whose paragraphs, from where matching stopped, are about as long
+        // as all the text that is left is taken to cover it, even if the model reworded its last words.
+        if final, result.count < paragraphs.count, prev < wtoks.count {
+            let rest = Array(paragraphs[result.count...])
+            let n = rest.reduce(0) { $0 + tokens($1).count }
+            let remaining = wtoks.count - prev
+            let head = tokens(rest[0]).prefix(4)
+            let near = Set(wtoks[prev..<min(prev + 10, wtoks.count)])
+            if Double(n) >= 0.75 * Double(remaining), Double(n) <= 1.25 * Double(remaining),
+               head.filter({ near.contains($0) }).count >= min(2, head.count) {
+                result.append((rest.joined(separator: " "), owner[wtoks.count - 1]))
+            }
         }
         return result
     }
@@ -261,7 +276,7 @@ enum LocalLLM {
             for attempt in 1...2 {
                 let answer = clean(try await complete(model, system: systemPrompt(unpunctuated: unpunctuated),
                                                       user: slice.joined(separator: " "), temperature: attempt == 1 ? 0.2 : 0.6))
-                accepted = align(paragraphs(of: answer), wtoks: wtoks, owner: owner)
+                accepted = align(paragraphs(of: answer), wtoks: wtoks, owner: owner, final: final)
                 if !accepted.isEmpty { break }
                 logRejected(model, attempt: attempt, sent: slice, answer: answer)
             }
@@ -278,6 +293,12 @@ enum LocalLLM {
                 if !final, kept.count > 1 { kept.removeLast() }
                 parts = kept.map { PolishPart(text: $0.text, fallback: false) }
                 used = kept.last!.endWord + 1
+                if final, slice.count - used > 0, slice.count - used < 40 {
+                    // Too small to be a window of its own: keep these last words, as transcribed, with the last paragraph.
+                    parts[parts.count - 1] = PolishPart(text: parts[parts.count - 1].text + " " + slice[used...].joined(separator: " "),
+                                                        fallback: false)
+                    used = slice.count
+                }
             }
             pos += used
             await onProgress(parts, pos, words.count)

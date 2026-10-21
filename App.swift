@@ -416,7 +416,7 @@ struct ContentView: View {
                 Text(title).font(.headline)
                 if let note { Text(note).font(.caption).foregroundColor(.orange) }
             }
-            GeometryReader { g in body.frame(width: g.size.width, height: g.size.height) }
+            body
                 .frame(minHeight: 80, maxHeight: .infinity)
                 .clipped()
                 .border(Color.secondary.opacity(0.3))

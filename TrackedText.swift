@@ -159,6 +159,11 @@ struct ReadOnlyText: NSViewRepresentable {
 
     func makeCoordinator() -> TrackingCoordinator { TrackingCoordinator() }
 
+    /// Takes exactly the space it is offered, so a long text never makes the pane taller than its place.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 300, height: proposal.height ?? 200)
+    }
+
     func makeNSView(context: Context) -> NSScrollView { context.coordinator.makeScrollView().0 }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -190,6 +195,11 @@ struct PolishedText: NSViewRepresentable {
     var onUserScroll: (() -> Void)? = nil
 
     func makeCoordinator() -> TrackingCoordinator { TrackingCoordinator() }
+
+    /// Takes exactly the space it is offered, so a long text never makes the pane taller than its place.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 300, height: proposal.height ?? 200)
+    }
 
     func makeNSView(context: Context) -> NSScrollView { context.coordinator.makeScrollView().0 }
 

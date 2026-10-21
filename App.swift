@@ -1091,7 +1091,14 @@ struct TranscriberApp: App {
             .defaultSize(width: 1000, height: 780)
             .windowResizability(.contentMinSize)
             .commands {
-                CommandGroup(after: .appInfo) { LicensesMenuButton() }
+                CommandGroup(replacing: .appInfo) {
+                    // The standard panel, without the build number in brackets: it is the version again.
+                    Button("About Transcriber") {
+                        NSApp.orderFrontStandardAboutPanel(options: [.version: ""])
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                    LicensesMenuButton()
+                }
                 CommandGroup(replacing: .help) { LicensesMenuButton() }
             }
         Window("Open Source Licenses", id: "licenses") { LicensesView() }

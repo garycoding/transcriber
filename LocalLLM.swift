@@ -21,6 +21,7 @@ enum LocalLLM {
         Add correct punctuation and capitalisation, correct words that are clearly misheard when the context makes the right word certain, \
         remove stutters and accidental repeats such as "the the", and divide the text into paragraphs where the topic or the thought changes. \
         Do not summarise, shorten, add, explain or comment. \
+        Write plain text only: no LaTeX, no Markdown, no symbols or special formatting. Where a formula is spoken, write it out as the words that were said. \
         The input lines are numbered; do not copy the numbers into the text. \
         \(final ? "Write all the paragraphs." : "The input is only the start of a longer transcript. Write only its first three paragraphs, and stop at the end of the third.") \
         Write a blank line between paragraphs. After each paragraph, on a line of its own, write [through N], where N is the number of the last input line that the paragraph covers.

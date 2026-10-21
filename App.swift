@@ -189,6 +189,7 @@ struct ContentView: View {
     @State private var polishTask: Task<Void, Never>?
     @State private var targeted = false
     @State private var sourceName = "transcript"
+    @State private var sourceFile = ""
     @StateObject private var model = ModelStore()
     @StateObject private var local = LocalModels()
 
@@ -313,6 +314,12 @@ struct ContentView: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 340)
+                .onChange(of: local.selectedID) { id in
+                    // A model chosen after the transcription was made polishes it now.
+                    if !id.isEmpty, !original.isEmpty, !busy, !polishVisible {
+                        polishTask = Task { await polishIfChosen(sourceFile, text: original) }
+                    }
+                }
                 Button { local.refresh() } label: { Image(systemName: "arrow.clockwise") }
                     .help("Look for local model servers again")
                 if local.searching { ProgressView().controlSize(.small) }
@@ -360,6 +367,7 @@ struct ContentView: View {
         polished = ""
         polishVisible = false
         sourceName = url.deletingPathExtension().lastPathComponent
+        sourceFile = url.lastPathComponent
         fraction = 0
         status = "Transcribing \(url.lastPathComponent)"
         DispatchQueue.global(qos: .userInitiated).async {
@@ -371,7 +379,7 @@ struct ContentView: View {
                 switch result {
                 case .success(let text):
                     original = text
-                    polishTask = Task { await polishIfChosen(url, text: text) }
+                    polishTask = Task { await polishIfChosen(url.lastPathComponent, text: text) }
                 case .failure(let e):
                     status = "Error: \(e.localizedDescription)"
                 }
@@ -381,8 +389,8 @@ struct ContentView: View {
 
     /// The second pass: runs only when a local model has been chosen. The transcript stays
     /// on show, and can be saved, while it runs.
-    func polishIfChosen(_ url: URL, text: String) async {
-        let done = "Done: \(url.lastPathComponent)."
+    func polishIfChosen(_ fileName: String, text: String) async {
+        let done = "Done: \(fileName)."
         guard !text.isEmpty else {
             status = done + " No speech was found."
             return
@@ -436,6 +444,7 @@ struct ContentView: View {
         polishFraction = 0
         etaSeconds = nil
         sourceName = "transcript"
+        sourceFile = ""
         status = "Drop an .m4a or .mp3 file here"
     }
 

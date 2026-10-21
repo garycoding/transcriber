@@ -14,6 +14,8 @@ struct SessionSegment: Codable, Equatable {
 struct SessionPart: Codable, Equatable {
     var text: String
     var fallback: Bool
+    var startWord: Int?   // the original words this paragraph covers, when known
+    var endWord: Int?
 }
 
 /// Everything about one transcription that is saved in `session.json`. Reading a saved session

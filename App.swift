@@ -883,7 +883,7 @@ struct ContentView: View {
         guard !original.isEmpty else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.zip]
-        panel.nameFieldStringValue = sourceName + " session.zip"
+        panel.nameFieldStringValue = sourceName + "-transcription_session.zip"
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         if sourceBytes > 2_000_000_000 {
             let alert = NSAlert()

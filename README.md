@@ -55,6 +55,10 @@ The generated text (the transcript, the polished text and the summary) cannot be
 
 One file is held at a time: after a transcription, the window accepts no further file until "Discard Transcription" is pressed, which clears both versions and cancels a polish in progress.
 
+## Saving a session
+
+"Save Session…" (beside "Discard Transcription") writes one zip file holding the whole transcription: `session.json` (the text exactly as shown, whisper's segments with their start and end times, the timings, the models used and the app version), the text as plain files (`transcript.txt`, `polished.txt`, `summary.txt`) for use in another editor, and the whole original audio or video file under `original/`. Dropping such a zip on the app opens it as it was saved, with the text as saved. A zip counts as the app's own only if it holds `session.json` in the app's format, only the files above, and one original file; any other zip is refused. A file larger than 2 GB asks for confirmation before saving, since the zip holds all of it.
+
 ## Configuration
 
 There is no configuration file. The speech model is stored at `~/Library/Application Support/Transcriber/ggml-small.bin`; delete it to have the app download it again.

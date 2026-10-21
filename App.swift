@@ -123,7 +123,7 @@ func run(_ exe: String, _ args: [String]) throws -> (Int32, String) {
 /// Runs whisper-cli and reports the fraction of the audio transcribed so far,
 /// read from the end time of each segment it prints.
 func runWhisper(_ whisper: String, wav: URL, duration: Double, progress: @escaping (Double) -> Void,
-                onText: @escaping (String) -> Void) throws -> String {
+                onSegment: @escaping (SessionSegment) -> Void) throws -> String {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: whisper)
     p.arguments = ["-m", modelURL.path, "-f", wav.path, "-l", "auto", "-mc", "0"]
@@ -131,18 +131,19 @@ func runWhisper(_ whisper: String, wav: URL, duration: Double, progress: @escapi
     p.standardOutput = out
     p.standardError = FileHandle.nullDevice
     try p.run()
-    let pattern = try NSRegularExpression(pattern: #"^\[[\d:.]+ --> (\d+):(\d+):(\d+\.\d+)\]\s*(.*)$"#)
+    let pattern = try NSRegularExpression(pattern: #"^\[(\d+):(\d+):(\d+\.\d+) --> (\d+):(\d+):(\d+\.\d+)\]\s*(.*)$"#)
     var segments: [String] = []
     var pending = Data()
     func take(_ line: String) {
         let range = NSRange(line.startIndex..., in: line)
-        guard let m = pattern.firstMatch(in: line, range: range),
-              let h = Double(line[Range(m.range(at: 1), in: line)!]),
-              let min = Double(line[Range(m.range(at: 2), in: line)!]),
-              let sec = Double(line[Range(m.range(at: 3), in: line)!]) else { return }
-        let text = String(line[Range(m.range(at: 4), in: line)!]).trimmingCharacters(in: .whitespaces)
-        if !text.isEmpty { segments.append(text); onText(text) }
-        progress(Swift.min(1, (h * 3600 + min * 60 + sec) / Swift.max(duration, 0.001)))
+        guard let m = pattern.firstMatch(in: line, range: range) else { return }
+        func number(_ i: Int) -> Double? { Double(line[Range(m.range(at: i), in: line)!]) }
+        guard let h0 = number(1), let m0 = number(2), let s0 = number(3), let h1 = number(4), let m1 = number(5), let s1 = number(6) else { return }
+        let start = h0 * 3600 + m0 * 60 + s0
+        let end = h1 * 3600 + m1 * 60 + s1
+        let text = String(line[Range(m.range(at: 7), in: line)!]).trimmingCharacters(in: .whitespaces)
+        if !text.isEmpty { segments.append(text); onSegment(SessionSegment(start: start, end: end, text: text)) }
+        progress(Swift.min(1, end / Swift.max(duration, 0.001)))
     }
     while true {
         let chunk = out.fileHandleForReading.availableData
@@ -160,7 +161,7 @@ func runWhisper(_ whisper: String, wav: URL, duration: Double, progress: @escapi
     return segments.joined(separator: " ")
 }
 
-func transcribe(_ input: URL, progress: @escaping (Double) -> Void, onText: @escaping (String) -> Void,
+func transcribe(_ input: URL, progress: @escaping (Double) -> Void, onSegment: @escaping (SessionSegment) -> Void,
                 onDuration: @escaping (Double) -> Void) throws -> String {
     guard let whisper = Bundle.main.url(forResource: "whisper-cli", withExtension: nil)?.path else {
         throw TranscribeError.missing("The app is incomplete: whisper-cli is missing from its bundle.")
@@ -177,7 +178,7 @@ func transcribe(_ input: URL, progress: @escaping (Double) -> Void, onText: @esc
     let audio = try AVAudioFile(forReading: wav)
     let duration = Double(audio.length) / audio.processingFormat.sampleRate
     onDuration(duration)
-    return try runWhisper(whisper, wav: wav, duration: duration, progress: progress, onText: onText)
+    return try runWhisper(whisper, wav: wav, duration: duration, progress: progress, onSegment: onSegment)
 }
 
 /// A native, scrollable, selectable text view that cannot be edited. New text is appended
@@ -250,9 +251,9 @@ struct PolishedText: NSViewRepresentable {
 }
 
 /// The file types whose audio macOS can decode without help: audio files, and the audio track of video files.
-let supportedExtensions = ["m4a", "mp3", "wav", "aif", "aiff", "aifc", "caf", "flac", "aac", "ac3", "mp2",
+let supportedExtensions = ["zip", "m4a", "mp3", "wav", "aif", "aiff", "aifc", "caf", "flac", "aac", "ac3", "mp2",
                            "mp4", "m4v", "mov", "3gp"]
-let dropHint = "Drop an audio or video file here"
+let dropHint = "Drop an audio or video file, or a saved session, here"
 
 struct ContentView: View {
     @State private var original = ""
@@ -281,6 +282,13 @@ struct ContentView: View {
     @State private var sourceName = "transcript"
     @State private var sourceFile = ""
     @State private var audioSeconds: Double?
+    @State private var segments: [SessionSegment] = []
+    @State private var sourceURL: URL?
+    @State private var sourceBytes: Int64 = 0
+    @State private var loadedZip: URL?
+    @State private var savingSession = false
+    @State private var polishModelLabel = ""
+    @State private var summaryModelLabel = ""
     @State private var transcribeSeconds: Double?
     @State private var polishSeconds: Double?
     @State private var summarySeconds: Double?
@@ -342,7 +350,11 @@ struct ContentView: View {
             VStack(spacing: 6) {
                 HStack {
                     Text(status).foregroundColor(.secondary)
+                    if savingSession { ProgressView().controlSize(.small) }
                     if hasTranscription {
+                        Button("Save Session…") { saveSession() }
+                            .disabled(busy || savingSession)
+                            .help("Save the transcript, the polished text, the summary and the original file in one zip file, to open again later")
                         Button("Discard Transcription") { discard() }
                             .disabled(transcribing)
                             .help(transcribing ? "Available when transcribing has finished" : "Clear everything so that another file can be dropped")
@@ -508,6 +520,9 @@ struct ContentView: View {
                     .help("Look for local model servers again")
                 if local.searching { ProgressView().controlSize(.small) }
                 Spacer()
+                if hasTranscription && local.selectedID.isEmpty && !summaryVisible {
+                    Text("Choose a model to enable Summarise").font(.caption).foregroundColor(.secondary)
+                }
                 Button("Summarise") { startSummary() }
                     .disabled(original.isEmpty || local.selectedID.isEmpty || busy || summaryVisible)
                     .help(summaryVisible
@@ -552,9 +567,10 @@ struct ContentView: View {
         let ext = url.pathExtension.lowercased()
         guard !hasTranscription else { return }
         guard supportedExtensions.contains(ext) else {
-            status = "Unsupported file type: .\(ext). Audio: mp3, m4a, aac, wav, aiff, caf, flac, ac3, mp2. Video: mp4, mov, m4v, 3gp."
+            status = "Unsupported file type: .\(ext). Audio: mp3, m4a, aac, wav, aiff, caf, flac, ac3, mp2. Video: mp4, mov, m4v, 3gp. Or a saved session (.zip)."
             return
         }
+        if ext == "zip" { openSession(url); return }
         guard model.state == .ready else { status = "The speech model is not ready yet; drop the file again when it is."; return }
         transcribing = true
         transcribeSeconds = nil
@@ -562,6 +578,12 @@ struct ContentView: View {
         summarySeconds = nil
         descriptionSeconds = nil
         let began = Date()
+        segments = []
+        sourceURL = url
+        sourceBytes = ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.int64Value ?? 0
+        loadedZip = nil
+        polishModelLabel = ""
+        summaryModelLabel = ""
         original = ""
         polished = ""
         polishVisible = false
@@ -578,7 +600,12 @@ struct ContentView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result {
                 try transcribe(url, progress: { f in DispatchQueue.main.async { fraction = f } },
-                               onText: { t in DispatchQueue.main.async { original += (original.isEmpty ? "" : " ") + t } },
+                               onSegment: { seg in
+                                DispatchQueue.main.async {
+                                    segments.append(seg)
+                                    original += (original.isEmpty ? "" : " ") + seg.text
+                                }
+                            },
                                onDuration: { d in
                                 DispatchQueue.main.async {
                                     audioSeconds = d
@@ -637,6 +664,7 @@ struct ContentView: View {
                 polishEtaStamp = Date()
             }
             polishSeconds = Date().timeIntervalSince(started)
+            polishModelLabel = chosen.label
             status = done + " Polished with \(chosen.label)."
             if kept > 0 {
                 status += " \(kept) stretch\(kept == 1 ? "" : "es") could not be polished and \(kept == 1 ? "is" : "are") left as transcribed, in orange."
@@ -681,6 +709,7 @@ struct ContentView: View {
             }
             summaryDescription = result.description
             summaryBody = result.summary
+            summaryModelLabel = chosen.label
             summarySeconds = result.summarySeconds
             descriptionSeconds = result.descriptionSeconds
             showSummaryTab = true
@@ -691,6 +720,113 @@ struct ContentView: View {
             status = "Summarising failed (\(error.localizedDescription))."
         }
         summarising = false
+    }
+
+    func sessionInfo() -> SessionInfo {
+        SessionInfo(
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+            created: ISO8601DateFormatter().string(from: Date()),
+            source: .init(file: sourceFile, bytes: sourceBytes, audioSeconds: audioSeconds),
+            whisper: .init(model: modelFileName, engine: "whisper.cpp v1.9.5", carriesContext: false),
+            timings: .init(transcribeSeconds: transcribeSeconds, polishSeconds: polishSeconds,
+                           summarySeconds: summarySeconds, descriptionSeconds: descriptionSeconds),
+            transcript: original,
+            segments: segments,
+            polish: polishedParts.isEmpty ? nil : .init(model: polishModelLabel,
+                paragraphs: polishedParts.map { SessionPart(text: $0.text, fallback: $0.fallback) }),
+            summary: summaryBody.isEmpty ? nil : .init(model: summaryModelLabel, description: summaryDescription, body: summaryBody))
+    }
+
+    /// Saves the transcription, its generated text and the whole original file in one zip.
+    func saveSession() {
+        guard !original.isEmpty else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.zip]
+        panel.nameFieldStringValue = sourceName + " session.zip"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        if sourceBytes > 2_000_000_000 {
+            let alert = NSAlert()
+            alert.messageText = "The original file is \(byteString(sourceBytes))"
+            alert.informativeText = "The session zip holds the whole original file, so it will be about that size, and saving takes a while."
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        let info = sessionInfo()
+        let source = sourceURL
+        let zip = loadedZip
+        savingSession = true
+        status = "Saving the session…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { () -> Int64 in
+                var temp: URL?
+                defer { if let temp { try? FileManager.default.removeItem(at: temp) } }
+                let file: URL
+                if let source {
+                    file = source
+                } else if let zip {
+                    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("transcriber-reopen-" + UUID().uuidString)
+                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    temp = dir
+                    file = try SessionArchive.extractOriginal(from: zip, into: dir)
+                } else {
+                    throw SessionArchive.Failure.failed("The original file is no longer available.")
+                }
+                guard FileManager.default.fileExists(atPath: file.path) else {
+                    throw SessionArchive.Failure.failed("The original file \(file.lastPathComponent) has been moved or deleted.")
+                }
+                try SessionArchive.save(info, original: file, to: destination)
+                return ((try? FileManager.default.attributesOfItem(atPath: destination.path)[.size]) as? NSNumber)?.int64Value ?? 0
+            }
+            DispatchQueue.main.async {
+                savingSession = false
+                switch result {
+                case .success(let bytes): status = "Saved \(destination.lastPathComponent) (\(byteString(bytes)))."
+                case .failure(let e): status = "Saving failed: \(e.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// Opens a zip saved by this app, so that the window looks as it did when the zip was made.
+    func openSession(_ zip: URL) {
+        status = "Opening \(zip.lastPathComponent)…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try SessionArchive.open(zip) }
+            DispatchQueue.main.async {
+                switch result {
+                case .failure(let e):
+                    status = e.localizedDescription
+                case .success(let info):
+                    original = info.transcript
+                    segments = info.segments
+                    sourceFile = info.source.file
+                    sourceName = (info.source.file as NSString).deletingPathExtension
+                    sourceURL = nil
+                    loadedZip = zip
+                    sourceBytes = info.source.bytes
+                    audioSeconds = info.source.audioSeconds
+                    transcribeSeconds = info.timings.transcribeSeconds
+                    polishSeconds = info.timings.polishSeconds
+                    summarySeconds = info.timings.summarySeconds
+                    descriptionSeconds = info.timings.descriptionSeconds
+                    polishedParts = (info.polish?.paragraphs ?? []).map { PolishPart(text: $0.text, fallback: $0.fallback) }
+                    polished = polishedParts.map(\.text).joined(separator: "\n\n")
+                    polishVisible = !polishedParts.isEmpty
+                    polishModelLabel = info.polish?.model ?? ""
+                    summaryDescription = info.summary?.description ?? ""
+                    summaryBody = info.summary?.body ?? ""
+                    summaryModelLabel = info.summary?.model ?? ""
+                    summaryVisible = !summaryBody.isEmpty
+                    showSummaryTab = false
+                    var saved = info.created
+                    if let date = ISO8601DateFormatter().date(from: info.created) {
+                        saved = date.formatted(date: .abbreviated, time: .shortened)
+                    }
+                    status = "Opened \(zip.lastPathComponent), saved \(saved). Discard it to open or transcribe another file."
+                }
+            }
+        }
     }
 
     /// Clears everything, so that another file can be dropped.
@@ -718,6 +854,12 @@ struct ContentView: View {
         sourceName = "transcript"
         sourceFile = ""
         audioSeconds = nil
+        segments = []
+        sourceURL = nil
+        sourceBytes = 0
+        loadedZip = nil
+        polishModelLabel = ""
+        summaryModelLabel = ""
         transcribeSeconds = nil
         polishSeconds = nil
         summarySeconds = nil

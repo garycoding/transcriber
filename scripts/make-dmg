@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Packs Transcriber.app into dist/Transcriber-<version>-macos.dmg: a disk image
+# holding the app beside an Applications shortcut, to drag the app across.
+# Run ./build.sh first.
+set -e
+cd "$(dirname "$0")/.."
+VERSION=$(tr -d '[:space:]' < VERSION.txt)
+OUT="dist/Transcriber-$VERSION-macos.dmg"
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+mkdir -p dist
+rm -f "$OUT"
+ditto Transcriber.app "$STAGE/Transcriber.app"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -quiet -volname "Transcriber" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$OUT"
+hdiutil verify -quiet "$OUT"
+echo "$OUT"

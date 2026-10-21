@@ -1,3 +1,4 @@
 Transcriber.app/
 .DS_Store
 build/
+dist/

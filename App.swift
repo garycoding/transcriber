@@ -741,7 +741,7 @@ struct ContentView: View {
                                           set: { scrubTime = $0; player.seek(to: $0, precise: false) }),
                            in: 0...max(player.duration, 1),
                            onEditingChanged: { editing in
-                               if editing { scrubTime = player.time } else { player.seek(to: scrubTime, precise: true) }
+                               if editing { scrubTime = player.time; follow = true } else { player.seek(to: scrubTime, precise: true) }
                                scrubbing = editing
                            })
                     Text(elapsed(player.duration)).monospacedDigit().foregroundColor(.secondary).frame(width: 52, alignment: .leading)

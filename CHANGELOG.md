@@ -4,6 +4,16 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+## [v0.5.1] - 2026-10-21
+
+### Highlights
+
+_Highlights were not generated for this release._
+
+### Docs
+
+- Add a download page published with GitHub Pages (#17)
+
 ## [v0.5.0] - 2026-10-21
 
 ### Highlights

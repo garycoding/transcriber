@@ -4,6 +4,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
+import AVFoundation
 import CryptoKit
 
 let modelFileName = "ggml-small.bin"
@@ -119,7 +120,46 @@ func run(_ exe: String, _ args: [String]) throws -> (Int32, String) {
     return (p.terminationStatus, String(decoding: data, as: UTF8.self))
 }
 
-func transcribe(_ input: URL) throws -> String {
+/// Runs whisper-cli and reports the fraction of the audio transcribed so far,
+/// read from the end time of each segment it prints.
+func runWhisper(_ whisper: String, wav: URL, duration: Double, progress: @escaping (Double) -> Void) throws -> String {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: whisper)
+    p.arguments = ["-m", modelURL.path, "-f", wav.path, "-l", "auto"]
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = FileHandle.nullDevice
+    try p.run()
+    let pattern = try NSRegularExpression(pattern: #"^\[[\d:.]+ --> (\d+):(\d+):(\d+\.\d+)\]\s*(.*)$"#)
+    var segments: [String] = []
+    var pending = Data()
+    func take(_ line: String) {
+        let range = NSRange(line.startIndex..., in: line)
+        guard let m = pattern.firstMatch(in: line, range: range),
+              let h = Double(line[Range(m.range(at: 1), in: line)!]),
+              let min = Double(line[Range(m.range(at: 2), in: line)!]),
+              let sec = Double(line[Range(m.range(at: 3), in: line)!]) else { return }
+        let text = String(line[Range(m.range(at: 4), in: line)!]).trimmingCharacters(in: .whitespaces)
+        if !text.isEmpty { segments.append(text) }
+        progress(Swift.min(1, (h * 3600 + min * 60 + sec) / Swift.max(duration, 0.001)))
+    }
+    while true {
+        let chunk = out.fileHandleForReading.availableData
+        if chunk.isEmpty { break }
+        pending.append(chunk)
+        while let nl = pending.firstIndex(of: 10) {
+            take(String(decoding: pending[pending.startIndex..<nl], as: UTF8.self))
+            pending.removeSubrange(pending.startIndex...nl)
+        }
+    }
+    if !pending.isEmpty { take(String(decoding: pending, as: UTF8.self)) }
+    p.waitUntilExit()
+    guard p.terminationStatus == 0 else { throw TranscribeError.failed("whisper-cli exited with status \(p.terminationStatus).") }
+    progress(1)
+    return segments.joined(separator: "\n")
+}
+
+func transcribe(_ input: URL, progress: @escaping (Double) -> Void) throws -> String {
     guard let whisper = Bundle.main.url(forResource: "whisper-cli", withExtension: nil)?.path else {
         throw TranscribeError.missing("The app is incomplete: whisper-cli is missing from its bundle.")
     }
@@ -130,15 +170,16 @@ func transcribe(_ input: URL) throws -> String {
     defer { try? FileManager.default.removeItem(at: wav) }
     let (cs, _) = try run("/usr/bin/afconvert", ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", input.path, wav.path])
     guard cs == 0 else { throw TranscribeError.failed("Could not decode the audio file.") }
-    let (ws, text) = try run(whisper, ["-m", modelURL.path, "-f", wav.path, "-nt", "-l", "auto"])
-    guard ws == 0 else { throw TranscribeError.failed("whisper-cli exited with status \(ws).") }
-    return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let audio = try AVAudioFile(forReading: wav)
+    let duration = Double(audio.length) / audio.processingFormat.sampleRate
+    return try runWhisper(whisper, wav: wav, duration: duration, progress: progress)
 }
 
 struct ContentView: View {
     @State private var transcript = ""
     @State private var status = "Drop an .m4a or .mp3 file here"
     @State private var busy = false
+    @State private var fraction = 0.0
     @State private var targeted = false
     @State private var sourceName = "transcript"
     @StateObject private var model = ModelStore()
@@ -150,12 +191,18 @@ struct ContentView: View {
                 RoundedRectangle(cornerRadius: 10)
                     .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [6]))
                     .foregroundColor(targeted ? .accentColor : .secondary)
-                HStack(spacing: 8) {
-                    if busy { ProgressView().controlSize(.small) }
+                VStack(spacing: 6) {
                     Text(status).foregroundColor(.secondary)
+                    if busy {
+                        HStack(spacing: 8) {
+                            ProgressView(value: fraction)
+                            Text("\(Int(fraction * 100))%").monospacedDigit().foregroundColor(.secondary)
+                        }
+                    }
                 }
+                .padding(.horizontal, 16)
             }
-            .frame(height: 70)
+            .frame(height: 80)
             TextEditor(text: $transcript)
                 .font(.body)
                 .border(Color.secondary.opacity(0.3))
@@ -210,9 +257,12 @@ struct ContentView: View {
         busy = true
         transcript = ""
         sourceName = url.deletingPathExtension().lastPathComponent
-        status = "Transcribing \(url.lastPathComponent)…"
+        fraction = 0
+        status = "Transcribing \(url.lastPathComponent)"
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try transcribe(url) }
+            let result = Result {
+                try transcribe(url) { f in DispatchQueue.main.async { fraction = f } }
+            }
             DispatchQueue.main.async {
                 busy = false
                 switch result {

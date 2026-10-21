@@ -7,7 +7,7 @@ SPDX-PackageSupplier = "Gary Frattarola <garyf@parkviewlab.ai>"
 
 # --- Documentation → CC-BY-4.0 ---------------------------------------------
 [[annotations]]
-path = ["docs/**", "README.md", "LICENSING.md"]
+path = ["docs/**", "README.md", "LICENSING.md", "CHANGELOG.md"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Gary Frattarola <garyf@parkviewlab.ai>"
 SPDX-License-Identifier = "CC-BY-4.0"

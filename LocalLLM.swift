@@ -14,13 +14,20 @@ struct LocalModel: Identifiable, Hashable {
 }
 
 enum LocalLLM {
-    static let systemPrompt = """
-    You edit machine-made transcripts of speech. Keep the speaker's words and meaning. \
-    Add correct punctuation and capitalisation, correct words that are clearly misheard when the context makes the right word certain, \
-    remove stutters and accidental repeats such as "the the", and divide the text into paragraphs where the topic or the thought changes. \
-    Do not summarise, shorten, add, explain or comment. \
-    Reply with the edited text only, with a blank line between paragraphs.
-    """
+    /// The instruction for one call. Every call is a fresh conversation about a window of the transcript.
+    static func systemPrompt(final: Bool) -> String {
+        """
+        You edit machine-made transcripts of speech. Keep the speaker's words and meaning. \
+        Add correct punctuation and capitalisation, correct words that are clearly misheard when the context makes the right word certain, \
+        remove stutters and accidental repeats such as "the the", and divide the text into paragraphs where the topic or the thought changes. \
+        Do not summarise, shorten, add, explain or comment. \
+        The input lines are numbered; do not copy the numbers into the text. \
+        \(final ? "Write all the paragraphs." : "The input is only the start of a longer transcript. Write only its first three paragraphs, and stop at the end of the third.") \
+        Write a blank line between paragraphs. After each paragraph, on a line of its own, write [through N], where N is the number of the last input line that the paragraph covers.
+        """
+    }
+
+    static let windowWords = 500
 
     /// The servers that are looked for, on their default ports.
     static func discover() async -> [LocalModel] {
@@ -48,33 +55,14 @@ enum LocalLLM {
             .map { LocalModel(server: server, port: port, name: $0) }
     }
 
-    /// Splits the transcript, at line ends, into pieces of about `maxWords` words.
-    static func chunks(of text: String, maxWords: Int = 450) -> [String] {
-        var out: [String] = []
-        var current: [String] = []
-        var count = 0
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            let n = line.split(whereSeparator: \.isWhitespace).count
-            if count + n > maxWords && !current.isEmpty {
-                out.append(current.joined(separator: "\n"))
-                current = []
-                count = 0
-            }
-            current.append(String(line))
-            count += n
-        }
-        if !current.isEmpty { out.append(current.joined(separator: "\n")) }
-        return out
-    }
-
-    private static func complete(_ model: LocalModel, user: String) async throws -> String {
+    private static func complete(_ model: LocalModel, system: String, user: String) async throws -> String {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(model.port)/v1/chat/completions")!)
         request.httpMethod = "POST"
-        request.timeoutInterval = 900
+        request.timeoutInterval = 600
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
-            "model": model.name, "temperature": 0.2, "stream": false,
-            "messages": [["role": "system", "content": systemPrompt], ["role": "user", "content": user]],
+            "model": model.name, "temperature": 0.2, "stream": false, "reasoning_effort": "none",
+            "messages": [["role": "system", "content": system], ["role": "user", "content": user]],
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -101,26 +89,82 @@ enum LocalLLM {
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Polishes the transcript piece by piece. A piece whose answer differs in length from
-    /// the original by more than a fifth is not trusted and is kept as transcribed.
+    private static func words(_ text: String) -> Int {
+        text.split(whereSeparator: \.isWhitespace).count
+    }
+
+    /// Reads the model's answer: paragraphs, each followed by a [through N] line. A paragraph is
+    /// accepted only when N advances, stays inside the window, and the paragraph's length is within
+    /// a quarter of the length of the lines it covers. Reading stops at the first paragraph that fails.
+    static func parse(_ answer: String, window: [String], final: Bool) -> [(text: String, through: Int)] {
+        let marker = try! NSRegularExpression(pattern: #"^\W*through\s+(\d+)\W*$"#, options: .caseInsensitive)
+        var result: [(text: String, through: Int)] = []
+        var buffer: [String] = []
+        var previous = 0
+        func accept(_ text: String, _ through: Int) -> Bool {
+            guard through > previous, through <= window.count, !text.isEmpty else { return false }
+            let source = words(window[previous..<through].joined(separator: " "))
+            let n = words(text)
+            guard Double(n) >= 0.75 * Double(source), Double(n) <= 1.25 * Double(source) else { return false }
+            result.append((text, through))
+            previous = through
+            return true
+        }
+        for raw in answer.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if let m = marker.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+               let r = Range(m.range(at: 1), in: line), let n = Int(line[r]) {
+                let text = buffer.joined(separator: " ")
+                buffer = []
+                if !accept(text, n) { return result }
+            } else if !line.isEmpty {
+                buffer.append(line)
+            }
+        }
+        if final, previous < window.count, !buffer.isEmpty { _ = accept(buffer.joined(separator: " "), window.count) }
+        return result
+    }
+
+    /// Polishes the transcript by repeated, independent calls. Each call is given the next window
+    /// of about `windowWords` words and returns its first paragraphs; those are kept, the lines
+    /// they cover are stripped from the front, and the rest goes into the next call. A paragraph
+    /// that reaches the end of the window may be cut off, so it is left for the next call unless it
+    /// is the only one. When no paragraph of an answer can be trusted, the first lines of the window
+    /// are kept as transcribed. Returns how many times that happened.
     static func polish(_ text: String, with model: LocalModel,
-                       progress: @MainActor @escaping (Int, Int) -> Void) async throws -> (text: String, kept: Int) {
-        let pieces = chunks(of: text)
-        var result: [String] = []
+                       onProgress: @MainActor @escaping (_ newText: String, _ consumedWords: Int, _ totalWords: Int) -> Void) async throws -> Int {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        let totalWords = max(1, lines.reduce(0) { $0 + words($1) })
+        var index = 0
+        var consumed = 0
         var kept = 0
-        for (i, piece) in pieces.enumerated() {
-            let original = piece.split(whereSeparator: \.isWhitespace).count
-            let answer = clean(try await complete(model, user: piece))
-            let words = answer.split(whereSeparator: \.isWhitespace).count
-            if original > 0, Double(words) >= 0.8 * Double(original), Double(words) <= 1.25 * Double(original) {
-                result.append(answer)
-            } else {
-                result.append(piece.replacingOccurrences(of: "\n", with: " "))
+        while index < lines.count {
+            try Task.checkCancellation()
+            var window: [String] = []
+            var count = 0
+            while index + window.count < lines.count, count < windowWords || window.isEmpty {
+                let line = lines[index + window.count]
+                window.append(line)
+                count += words(line)
+            }
+            let final = index + window.count >= lines.count
+            let numbered = window.enumerated().map { "\($0.offset + 1): \($0.element)" }.joined(separator: "\n")
+            let answer = clean(try await complete(model, system: systemPrompt(final: final), user: numbered))
+            var taken = parse(answer, window: window, final: final)
+            if !final, taken.count > 1, taken.last!.through == window.count { taken.removeLast() }
+            if taken.isEmpty {
+                var n = 0
+                var w = 0
+                while n < window.count, w < 150 || n == 0 { w += words(window[n]); n += 1 }
+                taken = [(window[0..<n].joined(separator: " "), n)]
                 kept += 1
             }
-            await progress(i + 1, pieces.count)
+            let through = taken.last!.through
+            consumed += words(window[0..<through].joined(separator: " "))
+            index += through
+            await onProgress(taken.map(\.text).joined(separator: "\n\n"), consumed, totalWords)
         }
-        return (result.joined(separator: "\n\n"), kept)
+        return kept
     }
 }
 

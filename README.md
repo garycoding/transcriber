@@ -37,9 +37,15 @@ open Transcriber.app
 
 ## Polishing with a local model
 
-If LM Studio (port 1234), Ollama (port 11434) or llama.cpp's `llama-server` (port 8080) is running on the same Mac, the app lists its models in the "Polish with" menu. Choose one, and each later transcription gets a second pass: the model adds punctuation, corrects clear mishearings, removes stutters and divides the text into paragraphs. The second pass has its own progress bar (a spinner when the text is short enough to need only one request). A "Polished / As transcribed" switch shows either version, and Save and Copy use the one on show. The default is "None", and the choice is remembered.
+If LM Studio (port 1234), Ollama (port 11434) or llama.cpp's `llama-server` (port 8080) is running on the same Mac, the app lists its models in the "Polish with" menu. Choose one, and each later transcription gets a second pass: the model adds punctuation, corrects clear mishearings, removes stutters and divides the text into paragraphs. The default is "None", and the choice is remembered.
 
-The app contacts only `127.0.0.1`; the transcript never leaves the Mac. Text is sent in pieces of about 450 words so that small context windows suffice. A piece whose answer is more than a fifth longer or shorter than the original is not trusted, and that piece is left as transcribed.
+The transcript stays on show, and can be copied or saved, while the pass runs. The polished version appears beside it and grows as the model works, with its own progress bar, a time estimate, and its own Copy and Save buttons.
+
+The pass works in independent calls, each a fresh conversation. A call is given the next 500 words or so and returns its first three paragraphs; the app keeps them, strips the lines they cover from the front of the transcript, and repeats with the rest. A paragraph that reaches the end of the window is left for the next call, since it may be cut off. When no paragraph of an answer fits the original (its length differs by more than a quarter, or its markers are wrong), the first lines of the window are kept as transcribed. Reasoning is switched off in the request, because a reasoning model spends most of its time thinking.
+
+The app contacts only `127.0.0.1`; the transcript never leaves the Mac. A model can change a word it should not, so read the polished text against the transcript before relying on it.
+
+One file is held at a time: after a transcription, the window accepts no further file until "Discard Transcription" is pressed, which clears both versions and cancels a polish in progress.
 
 ## Configuration
 

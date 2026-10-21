@@ -177,81 +177,44 @@ func transcribe(_ input: URL, progress: @escaping (Double) -> Void) throws -> St
 
 struct ContentView: View {
     @State private var original = ""
-    @State private var polished: String?
-    @State private var showOriginal = false
+    @State private var polished = ""
+    @State private var polishVisible = false
     @State private var status = "Drop an .m4a or .mp3 file here"
-    @State private var busy = false
+    @State private var transcribing = false
     @State private var fraction = 0.0
     @State private var polishing = false
-    @State private var polishDone = 0
-    @State private var polishTotal = 0
+    @State private var polishFraction = 0.0
+    @State private var etaSeconds: Double?
+    @State private var etaStamp = Date()
+    @State private var polishTask: Task<Void, Never>?
     @State private var targeted = false
     @State private var sourceName = "transcript"
     @StateObject private var model = ModelStore()
     @StateObject private var local = LocalModels()
 
+    var busy: Bool { transcribing || polishing }
+
+    /// A file may be dropped only when no transcription is held.
+    var hasTranscription: Bool { transcribing || !original.isEmpty }
+
     var body: some View {
         VStack(spacing: 12) {
             modelBanner
             polishPicker
-            ZStack {
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [6]))
-                    .foregroundColor(targeted ? .accentColor : .secondary)
-                VStack(spacing: 6) {
-                    Text(status).foregroundColor(.secondary)
-                    if busy {
-                        HStack(spacing: 8) {
-                            ProgressView(value: fraction)
-                            Text("\(Int(fraction * 100))%").monospacedDigit().foregroundColor(.secondary)
-                        }
-                    }
-                    if polishing {
-                        HStack(spacing: 8) {
-                            if polishTotal >= 2 {
-                                ProgressView(value: Double(polishDone), total: Double(polishTotal))
-                                Text("\(Int(Double(polishDone) / Double(polishTotal) * 100))%")
-                                    .monospacedDigit().foregroundColor(.secondary)
-                            } else {
-                                ProgressView().controlSize(.small)
-                            }
-                        }
-                    }
+            dropZone
+            HStack(spacing: 12) {
+                pane("As transcribed", text: $original, isEditable: true, counted: !transcribing,
+                     fileName: sourceName + ".txt")
+                if polishVisible {
+                    pane("Polished", text: $polished, isEditable: !polishing, counted: !polishing,
+                         fileName: sourceName + " (polished).txt")
                 }
-                .padding(.horizontal, 16)
-            }
-            .frame(height: polishing ? 118 : 80)
-            TextEditor(text: editorText)
-                .font(.body)
-                .border(Color.secondary.opacity(0.3))
-                .disabled(polishing)
-            HStack {
-                if !shown.isEmpty && !busy {
-                    Text("\(wordCount) \(wordCount == 1 ? "word" : "words")")
-                        .foregroundColor(.secondary)
-                        .monospacedDigit()
-                }
-                if polished != nil && !busy {
-                    Picker("", selection: $showOriginal) {
-                        Text("Polished").tag(false)
-                        Text("As transcribed").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 230)
-                }
-                Spacer()
-                Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(shown, forType: .string)
-                }.disabled(shown.isEmpty)
-                Button("Save as .txt…") { save() }.disabled(shown.isEmpty)
             }
         }
         .padding(16)
-        .frame(minWidth: 560, minHeight: 460)
+        .frame(minWidth: 640, minHeight: 480)
         .onDrop(of: [.fileURL], isTargeted: $targeted) { providers in
-            guard let p = providers.first else { return false }
+            guard !hasTranscription, let p = providers.first else { return false }
             _ = p.loadObject(ofClass: URL.self) { url, _ in
                 if let url { DispatchQueue.main.async { start(url) } }
             }
@@ -259,17 +222,74 @@ struct ContentView: View {
         }
     }
 
-    /// The text on show: the polished version once there is one, unless the original is chosen.
-    var shown: String { (showOriginal || polished == nil) ? original : polished! }
-
-    var editorText: Binding<String> {
-        Binding(get: { shown }, set: { value in
-            if showOriginal || polished == nil { original = value } else { polished = value }
-        })
+    var dropZone: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [6]))
+                .foregroundColor(targeted && !hasTranscription ? .accentColor : .secondary.opacity(hasTranscription ? 0.4 : 1))
+            VStack(spacing: 6) {
+                HStack {
+                    Text(status).foregroundColor(.secondary)
+                    if hasTranscription {
+                        Button("Discard Transcription") { discard() }
+                            .disabled(transcribing)
+                            .help(transcribing ? "Available when transcribing has finished" : "Clear everything so that another file can be dropped")
+                    }
+                }
+                if transcribing || polishing {
+                    progressRow("Transcribing", fraction)
+                }
+                if polishing {
+                    progressRow("Polishing", polishFraction)
+                    TimelineView(.periodic(from: .now, by: 5)) { _ in
+                        Text(etaText).font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .frame(height: polishing ? 130 : 80)
     }
 
-    var wordCount: Int {
-        shown.split(whereSeparator: \.isWhitespace).count
+    func progressRow(_ title: String, _ value: Double) -> some View {
+        HStack(spacing: 8) {
+            Text(title).foregroundColor(.secondary).frame(width: 90, alignment: .trailing)
+            ProgressView(value: value)
+            Text("\(Int(value * 100))%").monospacedDigit().foregroundColor(.secondary).frame(width: 44, alignment: .trailing)
+        }
+    }
+
+    var etaText: String {
+        guard let eta = etaSeconds else { return "Estimating the time left…" }
+        let left = max(0, eta - Date().timeIntervalSince(etaStamp))
+        if left < 60 { return "Less than a minute left" }
+        let minutes = Int((left / 60).rounded())
+        if minutes < 60 { return "About \(minutes) min left" }
+        return "About \(minutes / 60) h \(String(format: "%02d", minutes % 60)) min left"
+    }
+
+    func pane(_ title: String, text: Binding<String>, isEditable: Bool, counted: Bool, fileName: String) -> some View {
+        let count = text.wrappedValue.split(whereSeparator: \.isWhitespace).count
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.headline)
+            TextEditor(text: text)
+                .font(.body)
+                .border(Color.secondary.opacity(0.3))
+                .disabled(!isEditable)
+            HStack {
+                if !text.wrappedValue.isEmpty && counted {
+                    Text("\(count) \(count == 1 ? "word" : "words")")
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                }
+                Spacer()
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text.wrappedValue, forType: .string)
+                }.disabled(text.wrappedValue.isEmpty)
+                Button("Save as .txt…") { save(text.wrappedValue, as: fileName) }.disabled(text.wrappedValue.isEmpty)
+            }
+        }
     }
 
     struct PickerOption: Identifiable { let id: String; let label: String }
@@ -332,14 +352,13 @@ struct ContentView: View {
 
     func start(_ url: URL) {
         let ext = url.pathExtension.lowercased()
+        guard !hasTranscription else { return }
         guard ["m4a", "mp3"].contains(ext) else { status = "Unsupported file type: .\(ext)"; return }
         guard model.state == .ready else { status = "The speech model is not ready yet; drop the file again when it is."; return }
-        guard !busy else { return }
-        busy = true
+        transcribing = true
         original = ""
-        polished = nil
-        showOriginal = false
-        polishing = false
+        polished = ""
+        polishVisible = false
         sourceName = url.deletingPathExtension().lastPathComponent
         fraction = 0
         status = "Transcribing \(url.lastPathComponent)"
@@ -348,60 +367,84 @@ struct ContentView: View {
                 try transcribe(url) { f in DispatchQueue.main.async { fraction = f } }
             }
             DispatchQueue.main.async {
+                transcribing = false
                 switch result {
                 case .success(let text):
                     original = text
-                    Task { await polishIfChosen(url, text: text) }
+                    polishTask = Task { await polishIfChosen(url, text: text) }
                 case .failure(let e):
-                    busy = false
                     status = "Error: \(e.localizedDescription)"
                 }
             }
         }
     }
 
-    /// The second pass: runs only when a local model has been chosen.
+    /// The second pass: runs only when a local model has been chosen. The transcript stays
+    /// on show, and can be saved, while it runs.
     func polishIfChosen(_ url: URL, text: String) async {
         let done = "Done: \(url.lastPathComponent)."
-        guard !local.selectedID.isEmpty, !text.isEmpty else {
-            busy = false
-            status = done + " Drop another file to continue."
+        guard !text.isEmpty else {
+            status = done + " No speech was found."
+            return
+        }
+        guard !local.selectedID.isEmpty else {
+            status = done + " Discard the transcription to transcribe another file."
             return
         }
         let models = await LocalLLM.discover()
         local.found = models
         guard let chosen = models.first(where: { $0.id == local.selectedID }) else {
-            busy = false
-            status = done + " The chosen local model is not running, so the text is as transcribed."
+            status = done + " The chosen local model is not running, so there is no polished version."
             return
         }
-        polishDone = 0
-        polishTotal = LocalLLM.chunks(of: text).count
+        polished = ""
+        polishVisible = true
+        polishFraction = 0
+        etaSeconds = nil
         polishing = true
         status = "Polishing with \(chosen.label)"
+        let started = Date()
         do {
-            let (text, kept) = try await LocalLLM.polish(text, with: chosen) { d, n in
-                polishDone = d
-                polishTotal = n
+            let kept = try await LocalLLM.polish(text, with: chosen) { newText, consumed, total in
+                polished += (polished.isEmpty ? "" : "\n\n") + newText
+                polishFraction = Double(consumed) / Double(total)
+                let elapsed = Date().timeIntervalSince(started)
+                etaSeconds = elapsed / Double(max(consumed, 1)) * Double(total - consumed)
+                etaStamp = Date()
             }
-            polished = text
             status = done + " Polished with \(chosen.label)."
             if kept > 0 {
-                status += " \(kept) of \(polishTotal) sections are as transcribed, because the model's answer did not match the text."
+                status += " \(kept) passage\(kept == 1 ? "" : "s") left as transcribed, because the model's answer did not fit the text."
             }
         } catch {
-            status = done + " Polishing failed (\(error.localizedDescription)), so the text is as transcribed."
+            if Task.isCancelled { return }
+            status = done + " Polishing stopped (\(error.localizedDescription)); the polished text is incomplete."
         }
         polishing = false
-        busy = false
     }
 
-    func save() {
+    /// Clears everything, so that another file can be dropped.
+    func discard() {
+        polishTask?.cancel()
+        polishTask = nil
+        original = ""
+        polished = ""
+        polishVisible = false
+        polishing = false
+        transcribing = false
+        fraction = 0
+        polishFraction = 0
+        etaSeconds = nil
+        sourceName = "transcript"
+        status = "Drop an .m4a or .mp3 file here"
+    }
+
+    func save(_ text: String, as name: String) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = sourceName + ".txt"
+        panel.nameFieldStringValue = name
         if panel.runModal() == .OK, let url = panel.url {
-            do { try shown.write(to: url, atomically: true, encoding: .utf8) }
+            do { try text.write(to: url, atomically: true, encoding: .utf8) }
             catch { status = "Save failed: \(error.localizedDescription)" }
         }
     }

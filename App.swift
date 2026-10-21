@@ -286,7 +286,7 @@ struct ContentView: View {
             }
         }
         .padding(16)
-        .frame(minWidth: 640, minHeight: 480)
+        .frame(minWidth: 640, minHeight: 700)
         .background(GeometryReader { g in
             Color.clear
                 .onAppear { windowHeight = g.size.height }
@@ -814,7 +814,7 @@ struct ContentView: View {
             VStack(spacing: 6) {
                 if player.hasVideo && showVideo {
                     VideoView(player: player.player)
-                        .frame(height: min(220, max(110, windowHeight * 0.24)))
+                        .frame(height: min(220, max(80, (windowHeight - 520) * 0.6)))
                         .cornerRadius(6)
                 }
                 HStack(spacing: 10) {

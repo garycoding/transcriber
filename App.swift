@@ -210,31 +210,20 @@ struct ReadOnlyText: NSViewRepresentable {
     }
 }
 
-/// The polished text: scrollable, selectable, and editable once the polish has finished. New paragraphs
-/// are appended in place, and those kept as transcribed are shown in orange. The colours stay when the
-/// text is edited.
+/// The polished text: scrollable and selectable, but not editable. New paragraphs are appended in
+/// place, and those kept as transcribed are shown in orange.
 struct PolishedText: NSViewRepresentable {
     let parts: [PolishPart]
-    let isEditable: Bool
-    let onEdit: (String) -> Void
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
-        var onEdit: (String) -> Void
-        var applied = 0
-        init(onEdit: @escaping (String) -> Void) { self.onEdit = onEdit }
-        func textDidChange(_ notification: Notification) {
-            if let view = notification.object as? NSTextView { onEdit(view.string) }
-        }
-    }
+    final class Coordinator { var applied = 0 }
 
-    func makeCoordinator() -> Coordinator { Coordinator(onEdit: onEdit) }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
         let view = scroll.documentView as! NSTextView
-        view.delegate = context.coordinator
+        view.isEditable = false
         view.isSelectable = true
-        view.allowsUndo = true
         view.drawsBackground = false
         view.font = NSFont.preferredFont(forTextStyle: .body)
         view.textColor = .textColor
@@ -245,8 +234,6 @@ struct PolishedText: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let view = scroll.documentView as! NSTextView
         let coordinator = context.coordinator
-        coordinator.onEdit = onEdit
-        view.isEditable = isEditable
         if parts.count < coordinator.applied {
             view.string = ""
             coordinator.applied = 0
@@ -325,12 +312,12 @@ struct ContentView: View {
             } else {
                 HStack(spacing: 12) {
                     pane("As transcribed", text: original, complete: !transcribing, fileName: sourceName + ".txt") {
-                        if transcribing { ReadOnlyText(text: original) } else { TextEditor(text: $original).font(.body) }
+                        ReadOnlyText(text: original)
                     }
                     if polishVisible {
                         pane("Polished", text: polished, complete: !polishing, fileName: sourceName + " (polished).txt",
                              note: polishedParts.contains(where: \.fallback) ? "Orange text was left as transcribed." : nil) {
-                            PolishedText(parts: polishedParts, isEditable: !polishing, onEdit: { polished = $0 })
+                            PolishedText(parts: polishedParts)
                         }
                     }
                 }
@@ -469,10 +456,8 @@ struct ContentView: View {
                 .font(.title2.bold())
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Group {
-                if summarising { ReadOnlyText(text: summaryBody) } else { TextEditor(text: $summaryBody).font(.body) }
-            }
-            .border(Color.secondary.opacity(0.3))
+            ReadOnlyText(text: summaryBody)
+                .border(Color.secondary.opacity(0.3))
             HStack {
                 if !text.isEmpty && !summarising {
                     Text("\(count) \(count == 1 ? "word" : "words")").foregroundColor(.secondary).monospacedDigit()

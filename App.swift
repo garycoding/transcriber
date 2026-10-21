@@ -171,7 +171,9 @@ func transcribe(_ input: URL, progress: @escaping (Double) -> Void, onText: @esc
     let wav = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
     defer { try? FileManager.default.removeItem(at: wav) }
     let (cs, _) = try run("/usr/bin/afconvert", ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", input.path, wav.path])
-    guard cs == 0 else { throw TranscribeError.failed("Could not decode the audio file.") }
+    guard cs == 0 else {
+        throw TranscribeError.failed("Could not read audio from this file. It may have no audio track, or use a format macOS cannot decode.")
+    }
     let audio = try AVAudioFile(forReading: wav)
     let duration = Double(audio.length) / audio.processingFormat.sampleRate
     onDuration(duration)
@@ -260,14 +262,20 @@ struct PolishedText: NSViewRepresentable {
     }
 }
 
+/// The file types whose audio macOS can decode without help: audio files, and the audio track of video files.
+let supportedExtensions = ["m4a", "mp3", "wav", "aif", "aiff", "aifc", "caf", "flac", "aac", "ac3", "mp2",
+                           "mp4", "m4v", "mov", "3gp"]
+let dropHint = "Drop an audio or video file here"
+
 struct ContentView: View {
     @State private var original = ""
     @State private var polished = ""
     @State private var polishedParts: [PolishPart] = []
     @State private var polishVisible = false
-    @State private var status = "Drop an .m4a or .mp3 file here"
+    @State private var status = dropHint
     @State private var transcribing = false
     @State private var fraction = 0.0
+    @State private var stage = "Transcribing"
     @State private var polishing = false
     @State private var polishFraction = 0.0
     @State private var polishEta: Double?
@@ -360,7 +368,7 @@ struct ContentView: View {
                     Text(line).font(.caption).foregroundColor(.secondary)
                 }
                 if transcribing || polishing {
-                    progressRow("Transcribing", fraction)
+                    progressRow(stage, fraction)
                 }
                 if polishing {
                     progressRow("Polishing", polishFraction)
@@ -551,7 +559,10 @@ struct ContentView: View {
     func start(_ url: URL) {
         let ext = url.pathExtension.lowercased()
         guard !hasTranscription else { return }
-        guard ["m4a", "mp3"].contains(ext) else { status = "Unsupported file type: .\(ext)"; return }
+        guard supportedExtensions.contains(ext) else {
+            status = "Unsupported file type: .\(ext). Audio: mp3, m4a, aac, wav, aiff, caf, flac, ac3, mp2. Video: mp4, mov, m4v, 3gp."
+            return
+        }
         guard model.state == .ready else { status = "The speech model is not ready yet; drop the file again when it is."; return }
         transcribing = true
         transcribeSeconds = nil
@@ -570,12 +581,19 @@ struct ContentView: View {
         sourceFile = url.lastPathComponent
         audioSeconds = nil
         fraction = 0
-        status = "Transcribing \(url.lastPathComponent)"
+        stage = "Extracting audio"
+        status = "Extracting the audio of \(url.lastPathComponent)"
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result {
                 try transcribe(url, progress: { f in DispatchQueue.main.async { fraction = f } },
                                onText: { t in DispatchQueue.main.async { original += (original.isEmpty ? "" : " ") + t } },
-                               onDuration: { d in DispatchQueue.main.async { audioSeconds = d } })
+                               onDuration: { d in
+                                DispatchQueue.main.async {
+                                    audioSeconds = d
+                                    stage = "Transcribing"
+                                    status = "Transcribing \(url.lastPathComponent)"
+                                }
+                            })
             }
             DispatchQueue.main.async {
                 transcribing = false
@@ -712,7 +730,7 @@ struct ContentView: View {
         polishSeconds = nil
         summarySeconds = nil
         descriptionSeconds = nil
-        status = "Drop an .m4a or .mp3 file here"
+        status = dropHint
     }
 
     func save(_ text: String, as name: String) {

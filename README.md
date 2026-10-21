@@ -11,6 +11,10 @@ A small macOS app: drop an .m4a or .mp3 file onto its window and it transcribes 
 
 Version 0.1.0, not yet released. Verified: the transcription path on a generated .m4a, and the first-launch model download with its checksum. Not yet verified: dragging a file onto the window, .mp3 input and the save dialog.
 
+## Formats
+
+Audio: mp3, m4a, aac, wav, aiff, caf, flac, ac3, mp2. Video: mp4, mov, m4v, 3gp, from which the first audio track is used. macOS decodes them with its own `afconvert`, which writes a temporary 16 kHz mono WAV (about 115 MB per hour of audio) that is deleted afterwards. mkv, webm, avi, wmv and Ogg files are not supported.
+
 ## Install
 
 Apple silicon Macs only, macOS 13 or later.

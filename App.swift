@@ -717,6 +717,13 @@ struct ContentView: View {
         updateHighlights()
     }
 
+    /// Moves the player by a number of seconds, and brings the text to the new place.
+    func jog(_ seconds: Double) {
+        follow = true
+        player.seek(to: player.time + seconds, precise: true)
+        updateHighlights()
+    }
+
     var speedLabel: String {
         let r = Double(player.rate)
         return (r == r.rounded() ? String(Int(r)) : String(format: "%g", r)) + "×"
@@ -732,10 +739,14 @@ struct ContentView: View {
                         .cornerRadius(6)
                 }
                 HStack(spacing: 10) {
+                    Button { jog(-10) } label: { Image(systemName: "gobackward.10") }
+                        .help("Back 10 seconds")
                     Button { player.toggle() } label: {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").frame(width: 18)
                     }
                     .help(player.isPlaying ? "Pause" : "Play")
+                    Button { jog(10) } label: { Image(systemName: "goforward.10") }
+                        .help("Forward 10 seconds")
                     Text(elapsed(displayTime)).monospacedDigit().foregroundColor(.secondary).frame(width: 52, alignment: .trailing)
                     Slider(value: Binding(get: { displayTime },
                                           set: { scrubTime = $0; player.seek(to: $0, precise: false) }),

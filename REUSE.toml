@@ -7,7 +7,7 @@ SPDX-PackageSupplier = "Gary Frattarola <garyf@parkviewlab.ai>"
 
 # --- Documentation → CC-BY-4.0 ---------------------------------------------
 [[annotations]]
-path = ["docs/**", "README.md", "LICENSING.md"]
+path = ["docs/**", "README.md", "LICENSING.md", "CHANGELOG.md"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Gary Frattarola <garyf@parkviewlab.ai>"
 SPDX-License-Identifier = "CC-BY-4.0"
@@ -18,3 +18,10 @@ path = ["LICENSE", "VERSION.txt", ".gitignore", ".github/**", "AGENTS.md", "CLAU
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Gary Frattarola <garyf@parkviewlab.ai>"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# --- The app icon and its sources -> all rights reserved ---------------------
+[[annotations]]
+path = ["brand/app-icon/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Gary Frattarola <garyf@parkviewlab.ai>"
+SPDX-License-Identifier = "LicenseRef-AllRightsReserved"

@@ -14,6 +14,7 @@ Different kinds of content carry different licenses (encoded in [`REUSE.toml`](R
 |---|---|
 | Code, build scripts, configs, the version pin | `AGPL-3.0-or-later` |
 | Documentation (`docs/`, `README.md`, this file) | `CC-BY-4.0` |
+| The app icon and its sources (`brand/app-icon/`) | `LicenseRef-AllRightsReserved` (all rights reserved) |
 
 ## Third-party software
 

@@ -1,0 +1,5 @@
+Transcriber does not bundle third-party software. At run time it invokes, as a separate process, the following MIT-licensed software installed by the user:
+
+- whisper.cpp (whisper-cli), MIT, https://github.com/ggml-org/whisper.cpp
+- ggml, MIT, https://github.com/ggml-org/ggml
+- OpenAI Whisper model weights (ggml conversions), MIT, https://github.com/openai/whisper

@@ -1066,6 +1066,7 @@ struct TranscriberApp: App {
     var body: some Scene {
         Window("Transcriber", id: "main") { ContentView() }
             .defaultSize(width: 1000, height: 780)
+            .windowResizability(.contentMinSize)
             .commands {
                 CommandGroup(after: .appInfo) { LicensesMenuButton() }
                 CommandGroup(replacing: .help) { LicensesMenuButton() }

@@ -138,13 +138,22 @@ enum LocalLLM {
 
     // MARK: Matching the answer to the text
 
-    /// Words reduced for comparison: lower case, no punctuation, hyphens and dashes as spaces.
+    private static let numberWords: [String: String] = [
+        "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6", "seven": "7", "eight": "8",
+        "nine": "9", "ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14", "fifteen": "15",
+        "sixteen": "16", "seventeen": "17", "eighteen": "18", "nineteen": "19", "twenty": "20",
+    ]
+
+    /// Words reduced for comparison: lower case, no accents or punctuation, hyphens and dashes as spaces,
+    /// and spoken numbers (one to twenty) as digits, so that "Poincaré" matches "Poincare" and "two" matches "2".
     static func tokens(_ text: String) -> [String] {
         text.replacingOccurrences(of: "’", with: "'")
             .replacingOccurrences(of: "[-–—_]", with: " ", options: .regularExpression)
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
             .split(whereSeparator: \.isWhitespace)
             .map { String($0.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "'" }) }
             .filter { !$0.isEmpty }
+            .map { numberWords[$0] ?? $0 }
     }
 
     /// The paragraphs of an answer: runs of lines between blank lines.

@@ -161,9 +161,12 @@ enum LocalLLM {
         return out
     }
 
-    /// Finds where each paragraph of the answer ends in the window, by matching the paragraph's last
-    /// words, so that the next window can start at the next word. Reading stops at the first paragraph
-    /// that does not begin where the last one ended, or whose last words cannot be found, or whose
+    /// Finds where each paragraph of the answer ends in the window, so that the next window can start
+    /// at the next word. A paragraph's end is a place where its last three words are the window's
+    /// words at that place, and where most of its last ten words are found just before it, so that a
+    /// word the model dropped or changed earlier in the paragraph does not matter. Failing that, the
+    /// last two words must match and most of the last ten be found. Reading stops at the first
+    /// paragraph that does not begin where the last one ended, whose end cannot be found, or whose
     /// length differs from the text it covers by more than 30%. `owner` maps each token to its word.
     static func align(_ paragraphs: [String], wtoks: [String], owner: [Int]) -> [(text: String, endWord: Int)] {
         var result: [(text: String, endWord: Int)] = []
@@ -174,23 +177,29 @@ enum LocalLLM {
             let head = p.prefix(4)
             let near = Set(wtoks[prev..<min(prev + 10, wtoks.count)])
             guard head.filter({ near.contains($0) }).count >= min(2, head.count) else { break }
-            let k = min(6, p.count)
-            let tail = Array(p.suffix(k))
-            let lo = max(prev + k - 1, prev + Int(0.7 * Double(p.count)) - 1)
+            let lo = max(prev + 2, prev + Int(0.7 * Double(p.count)) - 1)
             let hi = min(wtoks.count - 1, prev + Int(1.35 * Double(p.count)) + 2)
             guard lo <= hi else { break }
+            let tail = Array(p.suffix(min(10, p.count)))
             var best = -1
-            var bestScore = -1
+            var bestScore = -1.0
             var bestDistance = Int.max
-            for j in lo...hi {
-                var score = 0
-                for t in 0..<k where wtoks[j - k + 1 + t] == tail[t] { score += 1 }
-                let distance = abs((j - prev + 1) - p.count)
-                if score > bestScore || (score == bestScore && distance < bestDistance) {
-                    best = j; bestScore = score; bestDistance = distance
+            for exact in [3, 2] {
+                for j in lo...hi where j - exact + 1 >= prev {
+                    var matches = true
+                    for t in 0..<exact where wtoks[j - t] != p[p.count - 1 - t] { matches = false; break }
+                    guard matches else { continue }
+                    let before = Set(wtoks[max(prev, j - 11)...j])
+                    let found = Double(tail.filter { before.contains($0) }.count) / Double(tail.count)
+                    guard found >= (exact == 3 ? 0.6 : 0.7) else { continue }
+                    let distance = abs((j - prev + 1) - p.count)
+                    if found > bestScore + 0.001 || (abs(found - bestScore) <= 0.001 && distance < bestDistance) {
+                        best = j; bestScore = found; bestDistance = distance
+                    }
                 }
+                if best >= 0 { break }
             }
-            guard best >= 0, bestScore >= max(3, k - 2) else { break }
+            guard best >= 0 else { break }
             let ratio = Double(p.count) / Double(best - prev + 1)
             guard ratio >= 0.7, ratio <= 1.3 else { break }
             result.append((text, owner[best]))

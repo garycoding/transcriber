@@ -9,30 +9,35 @@ A small macOS app: drop an .m4a or .mp3 file onto its window and it transcribes 
 
 ## Status
 
-Version 0.1.0, not yet released. The transcription path is verified on a generated .m4a; dragging a file onto the window, .mp3 input and the save dialog are not yet verified.
+Version 0.1.0, not yet released. Verified: the transcription path on a generated .m4a, and the first-launch model download with its checksum. Not yet verified: dragging a file onto the window, .mp3 input and the save dialog.
 
-## Run
+## Install
 
-Requirements: macOS 13 or later, Xcode (for `swiftc`), whisper.cpp and a ggml model.
+Apple silicon Macs only, macOS 13 or later.
+
+1. Download `Transcriber-<version>-macos.zip` from the [Releases](https://github.com/garycoding/transcriber/releases) page, unzip it, and move `Transcriber.app` to `/Applications`.
+2. The app is not signed with an Apple Developer ID, so macOS quarantines the download. Clear that once in Terminal:
 
 ```bash
-brew install whisper-cpp
-mkdir -p "$HOME/Library/Application Support/Transcriber"
-curl -L -o "$HOME/Library/Application Support/Transcriber/ggml-small.bin" https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+xattr -dr com.apple.quarantine /Applications/Transcriber.app
+```
+
+3. Open the app. On first launch it downloads the speech model (465 MB) and shows the progress at the top of the window; the download happens once and the model is verified against a checksum. After that the app works offline.
+
+## Build from source
+
+Requirements: Xcode (for `swiftc`) and cmake.
+
+```bash
 ./build.sh
 open Transcriber.app
 ```
 
-The app decodes audio with the system `afconvert` and runs `whisper-cli` as a separate process. A release attaches the built, ad-hoc-signed app as a zip; it still needs whisper.cpp and the model installed as above.
+`build.sh` first builds a self-contained `whisper-cli` from the pinned whisper.cpp release (`scripts/build-whisper`) and bundles it in the app. The app decodes audio with the system `afconvert` and runs the bundled `whisper-cli` as a separate process.
 
 ## Configuration
 
-There is no configuration file. Two paths are fixed:
-
-| Item | Location |
-|---|---|
-| `whisper-cli` | `/opt/homebrew/bin/whisper-cli`, else `/usr/local/bin/whisper-cli` |
-| Model | `~/Library/Application Support/Transcriber/ggml-small.bin` |
+There is no configuration file. The speech model is stored at `~/Library/Application Support/Transcriber/ggml-small.bin`; delete it to have the app download it again.
 
 ## Releasing
 

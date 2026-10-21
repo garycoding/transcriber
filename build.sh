@@ -2,13 +2,17 @@
 # SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Builds Transcriber.app with swiftc. The version is read from VERSION.txt.
+# Builds Transcriber.app (Apple silicon) with swiftc, bundling a whisper-cli built
+# by scripts/build-whisper. The version is read from VERSION.txt.
 set -e
 cd "$(dirname "$0")"
 VERSION=$(tr -d '[:space:]' < VERSION.txt)
 APP=Transcriber.app
-rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS"
-swiftc -O -parse-as-library App.swift -o "$APP/Contents/MacOS/Transcriber"
+rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+./scripts/build-whisper
+cp build/whisper/whisper-cli "$APP/Contents/Resources/whisper-cli"
+cp build/whisper/LICENSE "$APP/Contents/Resources/whisper.cpp-LICENSE.txt"
+swiftc -O -target arm64-apple-macos13.0 -parse-as-library App.swift -o "$APP/Contents/MacOS/Transcriber"
 cat > "$APP/Contents/Info.plist" <<P
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -23,4 +27,5 @@ cat > "$APP/Contents/Info.plist" <<P
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 P
+codesign --force --sign - "$APP/Contents/Resources/whisper-cli"
 codesign --force --sign - "$APP"

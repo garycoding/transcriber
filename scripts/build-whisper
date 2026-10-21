@@ -1,0 +1,29 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Builds a self-contained whisper-cli (static, Metal shader embedded) from the
+# pinned whisper.cpp release into build/whisper/. Skipped when already built.
+# Needs cmake and the Xcode command line tools.
+set -e
+cd "$(dirname "$0")/.."
+TAG=v1.9.5
+COMMIT=d1be6fde11ac6e0407606b4e42fe72d34add8037   # the commit v1.9.5 points at
+OUT=build/whisper
+if [ -x "$OUT/whisper-cli" ] && [ "$(cat "$OUT/TAG" 2>/dev/null)" = "$TAG" ]; then exit 0; fi
+rm -rf build/whisper-src "$OUT"
+mkdir -p build "$OUT"
+git clone --quiet --depth 1 --branch "$TAG" https://github.com/ggml-org/whisper.cpp build/whisper-src
+[ "$(git -C build/whisper-src rev-parse HEAD)" = "$COMMIT" ] || { echo "whisper.cpp $TAG is not commit $COMMIT" >&2; exit 1; }
+cmake -S build/whisper-src -B build/whisper-src/out \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
+  -DGGML_NATIVE=OFF -DGGML_BLAS=OFF \
+  -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF
+cmake --build build/whisper-src/out --config Release --target whisper-cli -j 8
+cp build/whisper-src/out/bin/whisper-cli "$OUT/whisper-cli"
+cp build/whisper-src/LICENSE "$OUT/LICENSE"
+echo "$TAG" > "$OUT/TAG"

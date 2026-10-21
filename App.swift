@@ -126,7 +126,7 @@ func runWhisper(_ whisper: String, wav: URL, duration: Double, progress: @escapi
                 onText: @escaping (String) -> Void) throws -> String {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: whisper)
-    p.arguments = ["-m", modelURL.path, "-f", wav.path, "-l", "auto"]
+    p.arguments = ["-m", modelURL.path, "-f", wav.path, "-l", "auto", "-mc", "0"]
     let out = Pipe()
     p.standardOutput = out
     p.standardError = FileHandle.nullDevice
@@ -273,7 +273,9 @@ struct ContentView: View {
     @State private var polishEta: Double?
     @State private var polishEtaStamp = Date()
     @State private var polishTask: Task<Void, Never>?
-    @State private var summary = ""
+    @State private var summaryDescription = ""
+    @State private var summaryBody = ""
+    @State private var showSummaryTab = false
     @State private var summaryVisible = false
     @State private var summarising = false
     @State private var summaryFraction = 0.0
@@ -297,25 +299,33 @@ struct ContentView: View {
             modelBanner
             polishPicker
             dropZone
-            HStack(spacing: 12) {
-                pane("As transcribed", text: original, complete: !transcribing, fileName: sourceName + ".txt") {
-                    if transcribing { ReadOnlyText(text: original) } else { TextEditor(text: $original).font(.body) }
+            if summaryVisible {
+                Picker("", selection: $showSummaryTab) {
+                    Text("Transcript").tag(false)
+                    Text("Summary").tag(true)
                 }
-                if polishVisible {
-                    pane("Polished", text: polished, complete: !polishing, fileName: sourceName + " (polished).txt",
-                         note: polishedParts.contains(where: \.fallback) ? "Orange text was left as transcribed." : nil) {
-                        PolishedText(parts: polishedParts, isEditable: !polishing, onEdit: { polished = $0 })
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 260)
+            }
+            if summaryVisible && showSummaryTab {
+                summaryView
+            } else {
+                HStack(spacing: 12) {
+                    pane("As transcribed", text: original, complete: !transcribing, fileName: sourceName + ".txt") {
+                        if transcribing { ReadOnlyText(text: original) } else { TextEditor(text: $original).font(.body) }
                     }
-                }
-                if summaryVisible {
-                    pane("Summary", text: summary, complete: !summarising, fileName: sourceName + " (summary).txt") {
-                        if summarising { ReadOnlyText(text: summary) } else { TextEditor(text: $summary).font(.body) }
+                    if polishVisible {
+                        pane("Polished", text: polished, complete: !polishing, fileName: sourceName + " (polished).txt",
+                             note: polishedParts.contains(where: \.fallback) ? "Orange text was left as transcribed." : nil) {
+                            PolishedText(parts: polishedParts, isEditable: !polishing, onEdit: { polished = $0 })
+                        }
                     }
                 }
             }
         }
         .padding(16)
-        .frame(minWidth: summaryVisible ? 980 : 640, minHeight: 480)
+        .frame(minWidth: 640, minHeight: 480)
         .onDrop(of: [.fileURL], isTargeted: $targeted) { providers in
             guard !hasTranscription, let p = providers.first else { return false }
             _ = p.loadObject(ofClass: URL.self) { url, _ in
@@ -416,6 +426,33 @@ struct ContentView: View {
         }
     }
 
+    /// The description line, with the scrollable summary below it.
+    var summaryView: some View {
+        let text = summaryDescription.isEmpty ? summaryBody : summaryDescription + "\n\n" + summaryBody
+        let count = text.split(whereSeparator: \.isWhitespace).count
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(summaryDescription)
+                .font(.title2.bold())
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Group {
+                if summarising { ReadOnlyText(text: summaryBody) } else { TextEditor(text: $summaryBody).font(.body) }
+            }
+            .border(Color.secondary.opacity(0.3))
+            HStack {
+                if !text.isEmpty && !summarising {
+                    Text("\(count) \(count == 1 ? "word" : "words")").foregroundColor(.secondary).monospacedDigit()
+                }
+                Spacer()
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                }.disabled(text.isEmpty || summarising)
+                Button("Save as .txt…") { save(text, as: sourceName + " (summary).txt") }.disabled(text.isEmpty || summarising)
+            }
+        }
+    }
+
     struct PickerOption: Identifiable { let id: String; let label: String }
 
     var pickerOptions: [PickerOption] {
@@ -494,7 +531,9 @@ struct ContentView: View {
         original = ""
         polished = ""
         polishVisible = false
-        summary = ""
+        summaryDescription = ""
+        summaryBody = ""
+        showSummaryTab = false
         summaryVisible = false
         sourceName = url.deletingPathExtension().lastPathComponent
         sourceFile = url.lastPathComponent
@@ -580,7 +619,8 @@ struct ContentView: View {
             status = "The chosen local model is not running, so there is no summary."
             return
         }
-        summary = ""
+        summaryDescription = ""
+        summaryBody = ""
         summaryFraction = 0
         summaryEta = nil
         summaryVisible = true
@@ -594,11 +634,13 @@ struct ContentView: View {
                 summaryEta = elapsed / Double(max(done, 1)) * Double(total - done)
                 summaryEtaStamp = Date()
             }
-            summary = result.description + "\n\n" + result.summary
+            summaryDescription = result.description
+            summaryBody = result.summary
+            showSummaryTab = true
             status = "Done: summarised with \(chosen.label)."
         } catch {
             if Task.isCancelled { return }
-            summaryVisible = !summary.isEmpty
+            summaryVisible = !summaryBody.isEmpty
             status = "Summarising failed (\(error.localizedDescription))."
         }
         summarising = false
@@ -610,7 +652,9 @@ struct ContentView: View {
         polishTask = nil
         summaryTask?.cancel()
         summaryTask = nil
-        summary = ""
+        summaryDescription = ""
+        summaryBody = ""
+        showSummaryTab = false
         summaryVisible = false
         summarising = false
         summaryFraction = 0

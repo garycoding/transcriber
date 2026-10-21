@@ -33,7 +33,7 @@ Requirements: Xcode (for `swiftc`) and cmake.
 open Transcriber.app
 ```
 
-`build.sh` first builds a self-contained `whisper-cli` from the pinned whisper.cpp release (`scripts/build-whisper`) and bundles it in the app. The app decodes audio with the system `afconvert` and runs the bundled `whisper-cli` as a separate process.
+`build.sh` first builds a self-contained `whisper-cli` from the pinned whisper.cpp release (`scripts/build-whisper`) and bundles it in the app. The app decodes audio with the system `afconvert` and runs the bundled `whisper-cli` as a separate process, without letting it carry earlier text forward (`-mc 0`): left to itself on a long recording, whisper tends to stop punctuating.
 
 ## Polishing with a local model
 

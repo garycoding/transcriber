@@ -4,6 +4,21 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+## [v0.5.3] - 2026-10-21
+
+### Highlights
+
+_Highlights were not generated for this release._
+
+### Bug fixes
+
+- Show the copyright in the About panel, and the version only once (#24)
+
+### Docs
+
+- Record the idea of polishing with Claude through the user's Claude Code (#22)
+- Claude polishing only through the user's own API key (#23)
+
 ## [v0.5.2] - 2026-10-21
 
 ### Highlights

@@ -68,11 +68,17 @@ ol.steps > li::before {
 ol.steps strong { display: block; margin-bottom: 2px; }
 ol.steps p { margin: 4px 0; }
 .command {
-  margin: 10px 0 8px; padding: 14px 16px; border-radius: 10px;
+  display: flex; align-items: center; gap: 12px;
+  margin: 10px 0 8px; padding: 10px 10px 10px 16px; border-radius: 10px;
   background: var(--panel); border-left: 4px solid var(--accent);
   font: 15px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-  overflow-wrap: anywhere; user-select: all; -webkit-user-select: all;
 }
+.command code { flex: 1; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; font: inherit; }
+.copy {
+  flex: none; padding: 7px 14px; border: 0; border-radius: 8px; cursor: pointer;
+  background: var(--accent); color: #fff; font: 600 14px -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+}
+.copy:hover { filter: brightness(1.08); }
 kbd {
   font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
   padding: 1px 6px; border-radius: 5px; border: 1px solid var(--muted);
@@ -116,8 +122,8 @@ footer a, .download a.plain, main a:not(.button) { color: var(--accent); }
     <li>
       <strong>Unblock it once, in Terminal</strong>
       <p>Transcriber is not registered with Apple, so the first time macOS refuses to open it. One command, typed once, tells your Mac that you trust it.</p>
-      <p>Open Terminal: press <kbd>⌘</kbd> and <kbd>Space</kbd> together, type <em>Terminal</em>, and press <kbd>Return</kbd>. Then copy this line, paste it into the Terminal window, and press <kbd>Return</kbd>:</p>
-      <div class="command">xattr -dr com.apple.quarantine /Applications/Transcriber.app</div>
+      <p>Open Terminal: press <kbd>⌘</kbd> and <kbd>Space</kbd> together, type <em>Terminal</em>, and press <kbd>Return</kbd>. Then click <em>Copy</em> below, click in the Terminal window, press <kbd>⌘</kbd> and <kbd>V</kbd> together to paste, and press <kbd>Return</kbd>:</p>
+      <div class="command"><code id="cmd">xattr -dr com.apple.quarantine /Applications/Transcriber.app</code><button class="copy" id="copy" type="button">Copy</button></div>
       <p class="note">When it works, Terminal shows nothing at all; that is expected. You can close Terminal. Do this again only when you download a new version.</p>
     </li>
     <li>
@@ -141,6 +147,21 @@ footer a, .download a.plain, main a:not(.button) { color: var(--accent); }
   </footer>
 </main>
 <script>
+// Copies the Terminal command, and says so on the button for a moment.
+document.getElementById("copy").addEventListener("click", function () {
+  var button = this, text = document.getElementById("cmd").textContent;
+  function done() { button.textContent = "Copied"; setTimeout(function () { button.textContent = "Copy"; }, 2000); }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, function () { selectCommand(); });
+  } else { selectCommand(); }
+});
+// Where the clipboard cannot be written, selects the command so that ⌘C copies it.
+function selectCommand() {
+  var range = document.createRange();
+  range.selectNodeContents(document.getElementById("cmd"));
+  var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+}
+
 // The button links to the latest release page. Where GitHub answers, point it straight at the installer instead.
 fetch("https://api.github.com/repos/garycoding/transcriber/releases/latest")
   .then(function (r) { return r.ok ? r.json() : null; })

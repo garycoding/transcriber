@@ -4,6 +4,16 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+## [v0.5.0] - 2026-10-21
+
+### Highlights
+
+_Highlights were not generated for this release._
+
+### Features
+
+- Play, scrub and follow the original audio or video with both texts (#15)
+
 ## [v0.3.0] - 2026-10-20
 
 ### Highlights

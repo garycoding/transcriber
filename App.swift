@@ -887,5 +887,10 @@ struct TranscriberApp: App {
     @NSApplicationDelegateAdaptor(Delegate.self) var delegate
     var body: some Scene {
         Window("Transcriber", id: "main") { ContentView() }
+            .commands {
+                CommandGroup(after: .appInfo) { LicensesMenuButton() }
+                CommandGroup(replacing: .help) { LicensesMenuButton() }
+            }
+        Window("Open Source Licenses", id: "licenses") { LicensesView() }
     }
 }

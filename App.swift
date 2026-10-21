@@ -449,6 +449,11 @@ struct ContentView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             ReadOnlyText(text: summaryBody)
+                .overlay {
+                    if summarising && summaryBody.isEmpty {
+                        Text("Writing the summary…").foregroundColor(.secondary)
+                    }
+                }
                 .border(Color.secondary.opacity(0.3))
             HStack {
                 if !text.isEmpty && !summarising {

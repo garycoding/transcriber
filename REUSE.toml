@@ -25,3 +25,16 @@ path = ["brand/app-icon/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Gary Frattarola <garyf@parkviewlab.ai>"
 SPDX-License-Identifier = "LicenseRef-AllRightsReserved"
+
+# --- Third-party licence texts, shown in the Open Source Licenses window ------
+[[annotations]]
+path = ["legal/whisper.cpp-and-ggml-LICENSE.txt"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2023-2026 The ggml authors"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = ["legal/openai-whisper-LICENSE.txt"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2022 OpenAI"
+SPDX-License-Identifier = "MIT"

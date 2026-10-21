@@ -17,6 +17,10 @@ struct LocalModel: Identifiable, Hashable {
 struct PolishPart: Equatable {
     let text: String
     let fallback: Bool
+    /// The original words this paragraph covers: the first, and one past the last. Kept so that the polished
+    /// text can be linked to the audio.
+    var startWord: Int? = nil
+    var endWord: Int? = nil
 }
 
 enum LocalLLM {
@@ -261,6 +265,19 @@ enum LocalLLM {
 
     // MARK: The polish
 
+    /// The paragraphs of an accepted answer as parts that know which original words they cover. `accepted`
+    /// holds each paragraph's text and the index, within the window, of the last original word it covers;
+    /// `pos` is the index of the window's first word in the whole text.
+    static func parts(for accepted: [(text: String, endWord: Int)], at pos: Int) -> [PolishPart] {
+        var result: [PolishPart] = []
+        var cursor = 0
+        for a in accepted {
+            result.append(PolishPart(text: a.text, fallback: false, startWord: pos + cursor, endWord: pos + a.endWord + 1))
+            cursor = a.endWord + 1
+        }
+        return result
+    }
+
     /// Polishes the transcript by repeated, independent calls. Each call is given a window that begins
     /// and ends at sentence ends and returns the window as paragraphs of the model's own choosing.
     /// Each paragraph is matched to the original words; the last one is left for the next call, since
@@ -295,18 +312,18 @@ enum LocalLLM {
             if accepted.isEmpty {
                 var n = min(slice.count, 120)
                 if slice.count > 100, let e = (100...min(slice.count, 250)).first(where: { sentenceEnd(slice[$0 - 1]) }) { n = e }
-                parts = [PolishPart(text: slice[0..<n].joined(separator: " "), fallback: true)]
+                parts = [PolishPart(text: slice[0..<n].joined(separator: " "), fallback: true, startWord: pos, endWord: pos + n)]
                 used = n
                 fallbacks += 1
             } else {
                 var kept = accepted
                 if !final, kept.count > 1 { kept.removeLast() }
-                parts = kept.map { PolishPart(text: $0.text, fallback: false) }
+                parts = LocalLLM.parts(for: kept, at: pos)
                 used = kept.last!.endWord + 1
                 if final, slice.count - used > 0, slice.count - used < 40 {
                     // Too small to be a window of its own: keep these last words, as transcribed, with the last paragraph.
                     parts[parts.count - 1] = PolishPart(text: parts[parts.count - 1].text + " " + slice[used...].joined(separator: " "),
-                                                        fallback: false)
+                                                        fallback: false, startWord: parts[parts.count - 1].startWord, endWord: pos + slice.count)
                     used = slice.count
                 }
             }

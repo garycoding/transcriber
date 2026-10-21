@@ -33,7 +33,23 @@ Requirements: Xcode (for `swiftc`) and cmake.
 open Transcriber.app
 ```
 
-`build.sh` first builds a self-contained `whisper-cli` from the pinned whisper.cpp release (`scripts/build-whisper`) and bundles it in the app. The app decodes audio with the system `afconvert` and runs the bundled `whisper-cli` as a separate process.
+`build.sh` first builds a self-contained `whisper-cli` from the pinned whisper.cpp release (`scripts/build-whisper`) and bundles it in the app. The app decodes audio with the system `afconvert` and runs the bundled `whisper-cli` as a separate process, without letting it carry earlier text forward (`-mc 0`): left to itself on a long recording, whisper tends to stop punctuating.
+
+## Polishing with a local model
+
+If LM Studio (port 1234), Ollama (port 11434) or llama.cpp's `llama-server` (port 8080) is running on the same Mac, the app lists its models in the "Polish with" menu. Choose one, and each later transcription gets a second pass: the model adds punctuation, corrects clear mishearings, removes stutters and divides the text into paragraphs. The default is "None", and the choice is remembered.
+
+The transcript stays on show, and can be copied or saved, while the pass runs. The polished version appears beside it and grows as the model works, with its own progress bar, a time estimate, and its own Copy and Save buttons.
+
+The pass works in independent calls, each a fresh conversation. A window of about 500 words, beginning and ending at sentence ends, is given to the model, which returns it as paragraphs of its own choosing. The app finds where each paragraph ends in the original words, keeps all but the last (the thought may continue), and starts the next window at the word after the last one kept, so nothing is repeated or cut mid-sentence. An answer that cannot be matched to the text is asked for once more; if that fails too, whole sentences of the original are kept as transcribed and shown in orange. Each rejected answer is written to `~/Library/Logs/Transcriber/polish-rejected.log`, on this Mac only, so that it can be looked at. Reasoning is switched off in the request, because a reasoning model spends most of its time thinking.
+
+The "Summarise" button, which needs a chosen model, adds a third pane with a one-line description of the recording and a summary. It works on the polished text if there is any, in blocks of about 1,000 words, each summarised with the summaries of the blocks before it as notes, and then the block summaries are summarised as a whole. It runs only when the button is pressed.
+
+The app contacts only `127.0.0.1`; the transcript never leaves the Mac. A model can change a word it should not, so read the polished text against the transcript before relying on it. The window shows the length of the audio.
+
+The generated text (the transcript, the polished text and the summary) cannot be edited in the app; select it, copy it, or save it.
+
+One file is held at a time: after a transcription, the window accepts no further file until "Discard Transcription" is pressed, which clears both versions and cancels a polish in progress.
 
 ## Configuration
 

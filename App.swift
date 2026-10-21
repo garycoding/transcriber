@@ -160,6 +160,11 @@ struct ContentView: View {
                 .font(.body)
                 .border(Color.secondary.opacity(0.3))
             HStack {
+                if !transcript.isEmpty && !busy {
+                    Text("\(wordCount) \(wordCount == 1 ? "word" : "words")")
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                }
                 Spacer()
                 Button("Copy") {
                     NSPasteboard.general.clearContents()
@@ -177,6 +182,10 @@ struct ContentView: View {
             }
             return true
         }
+    }
+
+    var wordCount: Int {
+        transcript.split(whereSeparator: \.isWhitespace).count
     }
 
     @ViewBuilder var modelBanner: some View {

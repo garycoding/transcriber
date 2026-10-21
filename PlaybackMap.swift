@@ -144,7 +144,42 @@ struct PlaybackMap {
         return segStart[lo] + min(max(fraction, 0), 1) * (segEnd[lo] - segStart[lo])
     }
 
+    // MARK: Search
+
+    /// The matches of a query in a text, ignoring case and accents.
+    static func matches(of query: String, in text: String) -> [NSRange] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return [] }
+        let ns = text as NSString
+        var found: [NSRange] = []
+        var from = 0
+        while from < ns.length {
+            let r = ns.range(of: q, options: [.caseInsensitive, .diacriticInsensitive], range: NSRange(location: from, length: ns.length - from))
+            if r.location == NSNotFound || r.length == 0 { break }
+            found.append(r)
+            from = r.location + r.length
+        }
+        return found
+    }
+
+    /// Which match to go to: the one after (or before) the current match, or, when none is current, the first at or after
+    /// the place being played (the last before it, going backwards). The search wraps round.
+    func matchIndex(in matches: [NSRange], current: Int?, direction: Int, atTime t: Double) -> Int? {
+        guard !matches.isEmpty else { return nil }
+        let n = matches.count
+        if let current { return (current + direction + n) % n }
+        let here = leftOffset(ofWord: word(atTime: t))
+        if direction >= 0 { return matches.firstIndex(where: { $0.location >= here }) ?? 0 }
+        return matches.lastIndex(where: { $0.location < here }) ?? n - 1
+    }
+
     // MARK: The original text
+
+    /// The character position at which an original word begins.
+    func leftOffset(ofWord w: Int) -> Int {
+        guard !wordStarts.isEmpty else { return 0 }
+        return wordStarts[min(max(w, 0), wordStarts.count - 1)]
+    }
 
     /// The sentence of the original text that holds a word.
     func leftSentence(forWord w: Int) -> NSRange? {

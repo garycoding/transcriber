@@ -229,6 +229,13 @@ struct ContentView: View {
     @State private var rightHighlight: NSRange?
     @State private var sessionOriginalURL: URL?
     @State private var windowHeight: CGFloat = 760
+    @State private var query = ""
+    @State private var matches: [NSRange] = []
+    @State private var matchIndex: Int?
+    @State private var findHighlight: NSRange?
+    @State private var matchTimes: [Double] = []
+    @State private var rightMarks: [NSRange] = []
+    @FocusState private var searchFocused: Bool
     @State private var sessionDirectory: URL?
     @State private var polishModelLabel = ""
     @State private var summaryModelLabel = ""
@@ -250,6 +257,7 @@ struct ContentView: View {
             polishPicker
             dropZone
             playbackSection
+            searchBar
             if summaryVisible {
                 Picker("", selection: $showSummaryTab) {
                     Text("Transcript").tag(false)
@@ -264,13 +272,13 @@ struct ContentView: View {
             } else {
                 HStack(spacing: 12) {
                     pane("As transcribed", text: original, complete: !transcribing, fileName: sourceName + ".txt") {
-                        ReadOnlyText(text: original, highlight: leftHighlight, follow: follow && player.isLoaded,
+                        ReadOnlyText(text: original, highlight: leftHighlight, find: findHighlight, marks: matches, follow: follow && player.isLoaded,
                                      onDoubleClick: { handleDoubleClick(left: true, $0) }, onUserScroll: { follow = false })
                     }
                     if polishVisible {
                         pane("Polished", text: polished, complete: !polishing, fileName: sourceName + " (polished).txt",
                              note: polishedParts.contains(where: \.fallback) ? "Orange text was left as transcribed." : nil) {
-                            PolishedText(parts: polishedParts, highlight: rightHighlight, follow: follow && player.isLoaded,
+                            PolishedText(parts: polishedParts, highlight: rightHighlight, marks: rightMarks, follow: follow && player.isLoaded,
                                          onDoubleClick: { handleDoubleClick(left: false, $0) }, onUserScroll: { follow = false })
                         }
                     }
@@ -285,6 +293,8 @@ struct ContentView: View {
                 .onChange(of: g.size.height) { windowHeight = $0 }
         })
         .onChange(of: displayTime) { _ in updateHighlights() }
+        .onChange(of: query) { _ in updateMatches() }
+        .onChange(of: original) { _ in updateMatches() }
         .onChange(of: segments.count) { n in if transcribing && n % 4 == 0 { rebuildMap() } }
         .onChange(of: player.isLoaded) { _ in updateHighlights() }
         .onChange(of: polishing) { _ in rebuildMap() }
@@ -698,6 +708,7 @@ struct ContentView: View {
         map = PlaybackMap(text: original, segments: segments,
                           parts: polishedParts.map { (text: $0.text, startWord: $0.startWord, endWord: $0.endWord) })
         updateHighlights()
+        updateMarks()
     }
 
     func updateHighlights() {
@@ -722,6 +733,74 @@ struct ContentView: View {
         follow = true
         player.seek(to: player.time + seconds, precise: true)
         updateHighlights()
+    }
+
+    // MARK: Search
+
+    /// The matches of the query in the original text, ignoring case and accents.
+    func updateMatches() {
+        findHighlight = nil
+        matchIndex = nil
+        matches = PlaybackMap.matches(of: query, in: original)
+        updateMarks()
+    }
+
+    /// Where the matches fall in the audio, and in the polished text, for the marks on the slider and the scroll bars.
+    func updateMarks() {
+        guard let map, !matches.isEmpty else { matchTimes = []; rightMarks = []; return }
+        let words = matches.map { map.word(forLeftCharacter: $0.location) }
+        matchTimes = words.map { map.time(atMiddleOfWord: $0) }
+        rightMarks = (polishVisible && !polishing) ? words.compactMap { map.rightSentence(forWord: $0) } : []
+    }
+
+    /// Goes to the next match (or the previous), counted from the place being played, and moves everything to it:
+    /// the player, the original text, and the polished text.
+    func find(_ direction: Int) {
+        guard let map, let index = map.matchIndex(in: matches, current: matchIndex, direction: direction, atTime: displayTime) else { return }
+        matchIndex = index
+        let match = matches[index]
+        findHighlight = match
+        follow = true
+        let w = map.word(forLeftCharacter: match.location)
+        if player.isLoaded {
+            player.seek(to: map.time(atMiddleOfWord: w), precise: true)
+            updateHighlights()
+        } else {
+            leftHighlight = map.leftSentence(forWord: w)
+            rightHighlight = (polishVisible && !polishing) ? map.rightSentence(forWord: w) : nil
+        }
+    }
+
+    var matchLabel: String {
+        if query.trimmingCharacters(in: .whitespaces).isEmpty { return "" }
+        if matches.isEmpty { return "No matches" }
+        if let i = matchIndex { return "\(i + 1) of \(matches.count)" }
+        return "\(matches.count) match\(matches.count == 1 ? "" : "es")"
+    }
+
+    /// The search field, with next and previous, shown once there is a transcript to search.
+    @ViewBuilder var searchBar: some View {
+        if !original.isEmpty && !transcribing {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                TextField("Search the transcript", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($searchFocused)
+                    .onSubmit { find(1) }
+                Button { find(-1) } label: { Image(systemName: "chevron.up") }
+                    .disabled(matches.isEmpty)
+                    .help("Previous match")
+                Button { find(1) } label: { Image(systemName: "chevron.down") }
+                    .disabled(matches.isEmpty)
+                    .help("Next match")
+                Text(matchLabel).foregroundColor(.secondary).monospacedDigit().frame(minWidth: 80, alignment: .leading)
+                // Command-F moves to the search field.
+                Button("") { searchFocused = true }
+                    .keyboardShortcut("f", modifiers: .command)
+                    .opacity(0)
+                    .frame(width: 0, height: 0)
+            }
+        }
     }
 
     var speedLabel: String {
@@ -755,6 +834,17 @@ struct ContentView: View {
                                if editing { scrubTime = player.time; follow = true } else { player.seek(to: scrubTime, precise: true) }
                                scrubbing = editing
                            })
+                    .overlay {
+                        GeometryReader { g in
+                            ForEach(Array(matchTimes.enumerated()), id: \.offset) { _, t in
+                                Rectangle()
+                                    .fill(Color.orange)
+                                    .frame(width: 2, height: 12)
+                                    .position(x: 9 + CGFloat(t / max(player.duration, 1)) * (g.size.width - 18), y: g.size.height / 2)
+                            }
+                        }
+                        .allowsHitTesting(false)
+                    }
                     Text(elapsed(player.duration)).monospacedDigit().foregroundColor(.secondary).frame(width: 52, alignment: .leading)
                     Menu(speedLabel) {
                         ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
@@ -913,6 +1003,10 @@ struct ContentView: View {
         map = nil
         leftHighlight = nil
         rightHighlight = nil
+        query = ""
+        matches = []
+        matchIndex = nil
+        findHighlight = nil
         follow = true
         scrubbing = false
         polishTask?.cancel()

@@ -18,6 +18,19 @@ final class TrackedTextView: NSTextView {
     }
 }
 
+/// Small marks down the side of a scroll view, one for each search match, at the match's place in the whole text.
+final class TickView: NSView {
+    var fractions: [CGFloat] = [] { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.systemOrange.setFill()
+        for f in fractions {
+            NSRect(x: 1, y: min(max(f, 0), 1) * (bounds.height - 3), width: bounds.width - 2, height: 3).fill()
+        }
+    }
+}
+
 /// What both text panes share: the highlight of the sentence being played, scrolling to keep it in view
 /// while the user is following the playback, and noticing when the user scrolls by hand.
 final class TrackingCoordinator: NSObject {
@@ -25,10 +38,15 @@ final class TrackingCoordinator: NSObject {
     var onUserScroll: (() -> Void)?
     var onDoubleClick: ((Int) -> Void)?
     private var lastHighlight: NSRange?
+    private var lastFind: NSRange?
     private var lastFollow = false
+    private var ticks: TickView?
+    private var lastMarks: [NSRange] = []
+    private var lastMarkHeight: CGFloat = 0
     private var observer: NSObjectProtocol?
 
     static let highlightColor = NSColor.systemYellow.withAlphaComponent(0.32)
+    static let findColor = NSColor.systemOrange.withAlphaComponent(0.70)
 
     /// Builds the scrollable text view both panes use.
     func makeScrollView() -> (NSScrollView, TrackedTextView) {
@@ -50,6 +68,10 @@ final class TrackingCoordinator: NSObject {
         view.textContainerInset = NSSize(width: 4, height: 8)
         view.onDoubleClick = { [weak self] i in self?.onDoubleClick?(i) }
         scroll.documentView = view
+        let tick = TickView(frame: NSRect(x: scroll.bounds.width - 12, y: 0, width: 12, height: scroll.bounds.height))
+        tick.autoresizingMask = [.height, .minXMargin]
+        scroll.addSubview(tick, positioned: .above, relativeTo: nil)
+        ticks = tick
         // Only a scroll made by the user sends this; scrolling the app does itself does not.
         observer = NotificationCenter.default.addObserver(forName: NSScrollView.willStartLiveScrollNotification,
                                                           object: scroll, queue: .main) { [weak self] _ in self?.onUserScroll?() }
@@ -60,19 +82,45 @@ final class TrackingCoordinator: NSObject {
 
     /// Shows the highlight, and brings it into view when following. A change of highlight, or following being
     /// switched on, scrolls; a repeat of the same state does nothing.
-    func update(_ scroll: NSScrollView, _ view: NSTextView, highlight: NSRange?, follow: Bool) {
+    /// Puts a tick on the side of the scroll view for each range, at its place in the whole text. The ticks are worked
+    /// out again only when the ranges or the height of the text change.
+    func updateMarks(_ view: NSTextView, _ marks: [NSRange]) {
+        guard let layout = view.layoutManager, let container = view.textContainer, let ticks else { return }
+        let height = view.frame.height
+        if marks == lastMarks && abs(height - lastMarkHeight) < 1 { return }
+        lastMarks = marks
+        lastMarkHeight = height
+        let length = view.textStorage?.length ?? 0
+        guard height > 0 else { ticks.fractions = []; return }
+        ticks.fractions = marks.compactMap { r in
+            guard r.location < length else { return nil }
+            let glyph = layout.glyphIndexForCharacter(at: r.location)
+            let rect = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+            return (rect.midY + view.textContainerOrigin.y) / height
+        }
+    }
+
+    func update(_ scroll: NSScrollView, _ view: NSTextView, highlight: NSRange?, find: NSRange? = nil, marks: [NSRange] = [], follow: Bool) {
+        updateMarks(view, marks)
         let length = view.textStorage?.length ?? 0
         guard let layout = view.layoutManager else { return }
-        var range = highlight
-        if let r = range, r.location + r.length > length { range = length > r.location ? NSRange(location: r.location, length: length - r.location) : nil }
-        if range != lastHighlight {
-            if let old = lastHighlight, old.location + old.length <= length {
-                layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: old)
+        func clamp(_ r: NSRange?) -> NSRange? {
+            guard let r else { return nil }
+            if r.location + r.length <= length { return r }
+            return length > r.location ? NSRange(location: r.location, length: length - r.location) : nil
+        }
+        let range = clamp(highlight)
+        let findRange = clamp(find)
+        if range != lastHighlight || findRange != lastFind {
+            for old in [lastHighlight, lastFind] {
+                if let old, old.location + old.length <= length { layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: old) }
             }
             if let r = range { layout.addTemporaryAttribute(.backgroundColor, value: Self.highlightColor, forCharacterRange: r) }
-            let changed = range != nil
+            if let f = findRange { layout.addTemporaryAttribute(.backgroundColor, value: Self.findColor, forCharacterRange: f) }
+            let moved = range != nil && range != lastHighlight
             lastHighlight = range
-            if follow && changed { reveal(range!, scroll, view) }
+            lastFind = findRange
+            if follow && moved { reveal(range!, scroll, view) }
         } else if follow && !lastFollow, let r = range {
             reveal(r, scroll, view)
         }
@@ -103,6 +151,8 @@ final class TrackingCoordinator: NSObject {
 struct ReadOnlyText: NSViewRepresentable {
     let text: String
     var highlight: NSRange? = nil
+    var find: NSRange? = nil
+    var marks: [NSRange] = []
     var follow = false
     var onDoubleClick: ((Int) -> Void)? = nil
     var onUserScroll: (() -> Void)? = nil
@@ -125,7 +175,7 @@ struct ReadOnlyText: NSViewRepresentable {
                 view.string = text
             }
         }
-        coordinator.update(scroll, view, highlight: highlight, follow: follow)
+        coordinator.update(scroll, view, highlight: highlight, find: find, marks: marks, follow: follow)
     }
 }
 
@@ -134,6 +184,7 @@ struct ReadOnlyText: NSViewRepresentable {
 struct PolishedText: NSViewRepresentable {
     let parts: [PolishPart]
     var highlight: NSRange? = nil
+    var marks: [NSRange] = []
     var follow = false
     var onDoubleClick: ((Int) -> Void)? = nil
     var onUserScroll: (() -> Void)? = nil
@@ -160,6 +211,6 @@ struct PolishedText: NSViewRepresentable {
                 coordinator.applied += 1
             }
         }
-        coordinator.update(scroll, view, highlight: highlight, follow: follow)
+        coordinator.update(scroll, view, highlight: highlight, marks: marks, follow: follow)
     }
 }

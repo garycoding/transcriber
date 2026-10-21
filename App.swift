@@ -520,6 +520,9 @@ struct ContentView: View {
                     .help("Look for local model servers again")
                 if local.searching { ProgressView().controlSize(.small) }
                 Spacer()
+                if hasTranscription && local.selectedID.isEmpty && !summaryVisible {
+                    Text("Choose a model to enable Summarise").font(.caption).foregroundColor(.secondary)
+                }
                 Button("Summarise") { startSummary() }
                     .disabled(original.isEmpty || local.selectedID.isEmpty || busy || summaryVisible)
                     .help(summaryVisible

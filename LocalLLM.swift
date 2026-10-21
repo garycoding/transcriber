@@ -125,6 +125,23 @@ enum LocalLLM {
         return result
     }
 
+    /// The transcript as numbered units for the model: its sentences, and any very long sentence
+    /// cut into pieces of about forty words.
+    static func lines(of text: String) -> [String] {
+        var out: [String] = []
+        text.enumerateSubstrings(in: text.startIndex..., options: .bySentences) { sentence, _, _, _ in
+            guard let sentence else { return }
+            let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { return }
+            let w = trimmed.split(whereSeparator: \.isWhitespace).map(String.init)
+            if w.count <= 80 { out.append(trimmed); return }
+            for start in stride(from: 0, to: w.count, by: 40) {
+                out.append(w[start..<min(start + 40, w.count)].joined(separator: " "))
+            }
+        }
+        return out
+    }
+
     /// Polishes the transcript by repeated, independent calls. Each call is given the next window
     /// of about `windowWords` words and returns its first paragraphs; those are kept, the lines
     /// they cover are stripped from the front, and the rest goes into the next call. A paragraph
@@ -133,7 +150,7 @@ enum LocalLLM {
     /// are kept as transcribed. Returns how many times that happened.
     static func polish(_ text: String, with model: LocalModel,
                        onProgress: @MainActor @escaping (_ newText: String, _ consumedWords: Int, _ totalWords: Int) -> Void) async throws -> Int {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        let lines = lines(of: text)
         let totalWords = max(1, lines.reduce(0) { $0 + words($1) })
         var index = 0
         var consumed = 0

@@ -122,7 +122,8 @@ func run(_ exe: String, _ args: [String]) throws -> (Int32, String) {
 
 /// Runs whisper-cli and reports the fraction of the audio transcribed so far,
 /// read from the end time of each segment it prints.
-func runWhisper(_ whisper: String, wav: URL, duration: Double, progress: @escaping (Double) -> Void) throws -> String {
+func runWhisper(_ whisper: String, wav: URL, duration: Double, progress: @escaping (Double) -> Void,
+                onText: @escaping (String) -> Void) throws -> String {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: whisper)
     p.arguments = ["-m", modelURL.path, "-f", wav.path, "-l", "auto"]
@@ -140,7 +141,7 @@ func runWhisper(_ whisper: String, wav: URL, duration: Double, progress: @escapi
               let min = Double(line[Range(m.range(at: 2), in: line)!]),
               let sec = Double(line[Range(m.range(at: 3), in: line)!]) else { return }
         let text = String(line[Range(m.range(at: 4), in: line)!]).trimmingCharacters(in: .whitespaces)
-        if !text.isEmpty { segments.append(text) }
+        if !text.isEmpty { segments.append(text); onText(text) }
         progress(Swift.min(1, (h * 3600 + min * 60 + sec) / Swift.max(duration, 0.001)))
     }
     while true {
@@ -156,10 +157,10 @@ func runWhisper(_ whisper: String, wav: URL, duration: Double, progress: @escapi
     p.waitUntilExit()
     guard p.terminationStatus == 0 else { throw TranscribeError.failed("whisper-cli exited with status \(p.terminationStatus).") }
     progress(1)
-    return segments.joined(separator: "\n")
+    return segments.joined(separator: " ")
 }
 
-func transcribe(_ input: URL, progress: @escaping (Double) -> Void) throws -> String {
+func transcribe(_ input: URL, progress: @escaping (Double) -> Void, onText: @escaping (String) -> Void) throws -> String {
     guard let whisper = Bundle.main.url(forResource: "whisper-cli", withExtension: nil)?.path else {
         throw TranscribeError.missing("The app is incomplete: whisper-cli is missing from its bundle.")
     }
@@ -172,7 +173,7 @@ func transcribe(_ input: URL, progress: @escaping (Double) -> Void) throws -> St
     guard cs == 0 else { throw TranscribeError.failed("Could not decode the audio file.") }
     let audio = try AVAudioFile(forReading: wav)
     let duration = Double(audio.length) / audio.processingFormat.sampleRate
-    return try runWhisper(whisper, wav: wav, duration: duration, progress: progress)
+    return try runWhisper(whisper, wav: wav, duration: duration, progress: progress, onText: onText)
 }
 
 struct ContentView: View {
@@ -204,10 +205,10 @@ struct ContentView: View {
             polishPicker
             dropZone
             HStack(spacing: 12) {
-                pane("As transcribed", text: $original, isEditable: true, counted: !transcribing,
+                pane("As transcribed", text: $original, isEditable: !transcribing, complete: !transcribing,
                      fileName: sourceName + ".txt")
                 if polishVisible {
-                    pane("Polished", text: $polished, isEditable: !polishing, counted: !polishing,
+                    pane("Polished", text: $polished, isEditable: !polishing, complete: !polishing,
                          fileName: sourceName + " (polished).txt")
                 }
             }
@@ -269,16 +270,27 @@ struct ContentView: View {
         return "About \(minutes / 60) h \(String(format: "%02d", minutes % 60)) min left"
     }
 
-    func pane(_ title: String, text: Binding<String>, isEditable: Bool, counted: Bool, fileName: String) -> some View {
+    func pane(_ title: String, text: Binding<String>, isEditable: Bool, complete: Bool, fileName: String) -> some View {
         let count = text.wrappedValue.split(whereSeparator: \.isWhitespace).count
         return VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.headline)
-            TextEditor(text: text)
-                .font(.body)
-                .border(Color.secondary.opacity(0.3))
-                .disabled(!isEditable)
+            Group {
+                if isEditable {
+                    TextEditor(text: text).font(.body)
+                } else {
+                    // While the text is still arriving: scrollable and selectable, but not editable.
+                    ScrollView {
+                        Text(text.wrappedValue)
+                            .font(.body)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                    }
+                }
+            }
+            .border(Color.secondary.opacity(0.3))
             HStack {
-                if !text.wrappedValue.isEmpty && counted {
+                if !text.wrappedValue.isEmpty && complete {
                     Text("\(count) \(count == 1 ? "word" : "words")")
                         .foregroundColor(.secondary)
                         .monospacedDigit()
@@ -287,8 +299,8 @@ struct ContentView: View {
                 Button("Copy") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text.wrappedValue, forType: .string)
-                }.disabled(text.wrappedValue.isEmpty)
-                Button("Save as .txt…") { save(text.wrappedValue, as: fileName) }.disabled(text.wrappedValue.isEmpty)
+                }.disabled(text.wrappedValue.isEmpty || !complete)
+                Button("Save as .txt…") { save(text.wrappedValue, as: fileName) }.disabled(text.wrappedValue.isEmpty || !complete)
             }
         }
     }
@@ -372,7 +384,8 @@ struct ContentView: View {
         status = "Transcribing \(url.lastPathComponent)"
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result {
-                try transcribe(url) { f in DispatchQueue.main.async { fraction = f } }
+                try transcribe(url, progress: { f in DispatchQueue.main.async { fraction = f } },
+                               onText: { t in DispatchQueue.main.async { original += (original.isEmpty ? "" : " ") + t } })
             }
             DispatchQueue.main.async {
                 transcribing = false

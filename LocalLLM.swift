@@ -65,15 +65,17 @@ enum LocalLLM {
             .map { LocalModel(server: server, port: port, name: $0) }
     }
 
-    private static func complete(_ model: LocalModel, system: String, user: String, temperature: Double) async throws -> String {
+    private static func complete(_ model: LocalModel, system: String, user: String, temperature: Double,
+                                maxTokens: Int? = nil) async throws -> String {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(model.port)/v1/chat/completions")!)
         request.httpMethod = "POST"
         request.timeoutInterval = 600
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model.name, "temperature": temperature, "stream": false, "reasoning_effort": "none",
             "messages": [["role": "system", "content": system], ["role": "user", "content": user]],
         ]
+        if let maxTokens { body["max_tokens"] = maxTokens }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
@@ -272,6 +274,86 @@ enum LocalLLM {
             await onProgress(parts, pos, words.count)
         }
         return fallbacks
+    }
+
+    // MARK: The summary
+
+    private static let summaryBase = "You summarise a spoken recording. Write plain text only, no Markdown. State only what the text says; do not add facts, names or figures that are not in it. "
+    private static let partPrompt = summaryBase + "You are given notes on the earlier parts of the recording, then a new part. Use the notes only to understand the new part. Summarise only the new part, in three or four sentences, and do not repeat the notes."
+    private static let finalPrompt = summaryBase + "You are given summaries of consecutive parts of one recording, in order. Write one summary of the whole recording in two or three short paragraphs, keeping its order and saying how it ends."
+    private static let condensePrompt = summaryBase + "Condense these notes on a recording to about 300 words, keeping their order."
+    private static let descriptionPrompt = "You label recordings. Given a summary of a recording, write one very short description of what it is, in the form of these examples: \"A presentation about quarterly profits\", \"A physics lecture on dark matter\", \"A sales pitch for toothpaste\". Write only the description, as one line, without a full stop and without quotation marks. Say only what the text supports."
+
+    private static func wordCount(_ text: String) -> Int { text.split(whereSeparator: \.isWhitespace).count }
+
+    /// The text in blocks of about `target` words, cut between paragraphs. A text with no paragraph
+    /// breaks is cut at sentence ends instead.
+    static func blocks(of text: String, target: Int = 1000) -> [String] {
+        let paragraphs = text.components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        if paragraphs.count == 1, wordCount(paragraphs[0]) > target * 3 / 2 {
+            let words = paragraphs[0].split(whereSeparator: \.isWhitespace).map(String.init)
+            var out: [String] = []
+            var pos = 0
+            while pos < words.count {
+                var end = words.count
+                if words.count - pos > target * 3 / 2 {
+                    end = pos + target
+                    var e = end
+                    while e > pos + target / 2, !sentenceEnd(words[e - 1]) { e -= 1 }
+                    if sentenceEnd(words[e - 1]) { end = e }
+                }
+                out.append(words[pos..<end].joined(separator: " "))
+                pos = end
+            }
+            return out
+        }
+        var out: [String] = []
+        var current: [String] = []
+        var n = 0
+        for p in paragraphs {
+            current.append(p)
+            n += wordCount(p)
+            if n >= target { out.append(current.joined(separator: "\n\n")); current = []; n = 0 }
+        }
+        if !current.isEmpty {
+            if n < target * 2 / 5, !out.isEmpty { out[out.count - 1] += "\n\n" + current.joined(separator: "\n\n") }
+            else { out.append(current.joined(separator: "\n\n")) }
+        }
+        return out
+    }
+
+    /// Summarises the text in independent calls: each block of about 1,000 words is summarised with the
+    /// summaries of the blocks before it as notes, then the block summaries are summarised as a whole,
+    /// and a one-line description is written from that. `onProgress` is given steps done of steps in all.
+    static func summarise(_ text: String, with model: LocalModel,
+                          onProgress: @MainActor @escaping (_ done: Int, _ total: Int) -> Void) async throws -> (description: String, summary: String) {
+        let parts = blocks(of: text)
+        let total = parts.count + 2
+        var sums: [String] = []
+        for (i, part) in parts.enumerated() {
+            try Task.checkCancellation()
+            var notes = sums.joined(separator: " ")
+            if wordCount(notes) > 700 {
+                notes = try await complete(model, system: condensePrompt, user: notes, temperature: 0.2, maxTokens: 600)
+                sums = [notes]
+            }
+            let user = (notes.isEmpty ? "New part (the first):\n" : "Notes on the earlier parts:\n\(notes)\n\nNew part:\n") + part
+            sums.append(try await complete(model, system: partPrompt, user: user, temperature: 0.2, maxTokens: 700))
+            await onProgress(i + 1, total)
+        }
+        try Task.checkCancellation()
+        let summary = parts.count == 1 ? sums[0]
+            : try await complete(model, system: finalPrompt,
+                                 user: sums.enumerated().map { "Part \($0.offset + 1): \($0.element)" }.joined(separator: "\n\n"),
+                                 temperature: 0.2, maxTokens: 900)
+        await onProgress(parts.count + 1, total)
+        try Task.checkCancellation()
+        var description = try await complete(model, system: descriptionPrompt, user: summary, temperature: 0.2, maxTokens: 60)
+        description = description.split(separator: "\n").first.map(String.init) ?? description
+        description = description.trimmingCharacters(in: CharacterSet(charactersIn: " \"'.")).trimmingCharacters(in: .whitespaces)
+        await onProgress(total, total)
+        return (description, summary)
     }
 }
 

@@ -270,9 +270,16 @@ struct ContentView: View {
     @State private var fraction = 0.0
     @State private var polishing = false
     @State private var polishFraction = 0.0
-    @State private var etaSeconds: Double?
-    @State private var etaStamp = Date()
+    @State private var polishEta: Double?
+    @State private var polishEtaStamp = Date()
     @State private var polishTask: Task<Void, Never>?
+    @State private var summary = ""
+    @State private var summaryVisible = false
+    @State private var summarising = false
+    @State private var summaryFraction = 0.0
+    @State private var summaryEta: Double?
+    @State private var summaryEtaStamp = Date()
+    @State private var summaryTask: Task<Void, Never>?
     @State private var targeted = false
     @State private var sourceName = "transcript"
     @State private var sourceFile = ""
@@ -280,7 +287,7 @@ struct ContentView: View {
     @StateObject private var model = ModelStore()
     @StateObject private var local = LocalModels()
 
-    var busy: Bool { transcribing || polishing }
+    var busy: Bool { transcribing || polishing || summarising }
 
     /// A file may be dropped only when no transcription is held.
     var hasTranscription: Bool { transcribing || !original.isEmpty }
@@ -300,10 +307,15 @@ struct ContentView: View {
                         PolishedText(parts: polishedParts, isEditable: !polishing, onEdit: { polished = $0 })
                     }
                 }
+                if summaryVisible {
+                    pane("Summary", text: summary, complete: !summarising, fileName: sourceName + " (summary).txt") {
+                        if summarising { ReadOnlyText(text: summary) } else { TextEditor(text: $summary).font(.body) }
+                    }
+                }
             }
         }
         .padding(16)
-        .frame(minWidth: 640, minHeight: 480)
+        .frame(minWidth: summaryVisible ? 980 : 640, minHeight: 480)
         .onDrop(of: [.fileURL], isTargeted: $targeted) { providers in
             guard !hasTranscription, let p = providers.first else { return false }
             _ = p.loadObject(ofClass: URL.self) { url, _ in
@@ -336,19 +348,30 @@ struct ContentView: View {
                 if polishing {
                     progressRow("Polishing", polishFraction)
                     TimelineView(.periodic(from: .now, by: 5)) { _ in
-                        Text(etaText).font(.caption).foregroundColor(.secondary)
+                        Text(etaText(polishEta, since: polishEtaStamp)).font(.caption).foregroundColor(.secondary)
+                    }
+                }
+                if summarising {
+                    progressRow("Summarising", summaryFraction)
+                    TimelineView(.periodic(from: .now, by: 5)) { _ in
+                        Text(etaText(summaryEta, since: summaryEtaStamp)).font(.caption).foregroundColor(.secondary)
                     }
                 }
             }
             .padding(.horizontal, 16)
         }
-        .frame(height: polishing ? 146 : 96)
+        .frame(height: zoneHeight)
     }
 
     /// A length of time as h:mm:ss.
     func hms(_ seconds: Double) -> String {
         let total = Int(seconds.rounded())
         return String(format: "%d:%02d:%02d", total / 3600, total % 3600 / 60, total % 60)
+    }
+
+    var zoneHeight: CGFloat {
+        80 + (audioSeconds != nil ? 18 : 0) + (transcribing || polishing || summarising ? 28 : 0)
+            + (polishing ? 46 : 0) + (summarising ? 46 : 0)
     }
 
     func progressRow(_ title: String, _ value: Double) -> some View {
@@ -359,9 +382,9 @@ struct ContentView: View {
         }
     }
 
-    var etaText: String {
-        guard let eta = etaSeconds else { return "Estimating the time left…" }
-        let left = max(0, eta - Date().timeIntervalSince(etaStamp))
+    func etaText(_ eta: Double?, since stamp: Date) -> String {
+        guard let eta else { return "Estimating the time left…" }
+        let left = max(0, eta - Date().timeIntervalSince(stamp))
         if left < 60 { return "Less than a minute left" }
         let minutes = Int((left / 60).rounded())
         if minutes < 60 { return "About \(minutes) min left" }
@@ -424,10 +447,15 @@ struct ContentView: View {
                     .help("Look for local model servers again")
                 if local.searching { ProgressView().controlSize(.small) }
                 Spacer()
+                Button("Summarise") { startSummary() }
+                    .disabled(original.isEmpty || local.selectedID.isEmpty || busy)
+                    .help(local.selectedID.isEmpty
+                          ? "Choose a local model first"
+                          : "Write a one-line description and a summary of the transcription, using the chosen model")
             }
             .disabled(busy)
             if local.found.isEmpty && !local.searching {
-                Text("No local model found (LM Studio, Ollama or llama.cpp). Start one and press refresh to have transcripts polished and divided into paragraphs. Everything stays on this Mac.")
+                Text("No local model found. If LM Studio, Ollama or llama.cpp is running on this Mac with a model, this app will use it to polish your transcripts, divide them into paragraphs, and write a summary and a one-line description of each recording. Start one and press the refresh arrow. Everything stays on this Mac.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -466,6 +494,8 @@ struct ContentView: View {
         original = ""
         polished = ""
         polishVisible = false
+        summary = ""
+        summaryVisible = false
         sourceName = url.deletingPathExtension().lastPathComponent
         sourceFile = url.lastPathComponent
         audioSeconds = nil
@@ -512,7 +542,7 @@ struct ContentView: View {
         polishedParts = []
         polishVisible = true
         polishFraction = 0
-        etaSeconds = nil
+        polishEta = nil
         polishing = true
         status = "Polishing with \(chosen.label)"
         let started = Date()
@@ -522,8 +552,8 @@ struct ContentView: View {
                 polished = polishedParts.map(\.text).joined(separator: "\n\n")
                 polishFraction = Double(consumed) / Double(total)
                 let elapsed = Date().timeIntervalSince(started)
-                etaSeconds = elapsed / Double(max(consumed, 1)) * Double(total - consumed)
-                etaStamp = Date()
+                polishEta = elapsed / Double(max(consumed, 1)) * Double(total - consumed)
+                polishEtaStamp = Date()
             }
             status = done + " Polished with \(chosen.label)."
             if kept > 0 {
@@ -536,10 +566,55 @@ struct ContentView: View {
         polishing = false
     }
 
+    /// Runs only when the Summarise button is pressed. It uses the polished text if there is any.
+    func startSummary() {
+        let source = (polishVisible && !polished.isEmpty) ? polished : original
+        guard !source.isEmpty else { return }
+        summaryTask = Task { await summarise(source) }
+    }
+
+    func summarise(_ source: String) async {
+        let models = await LocalLLM.discover()
+        local.found = models
+        guard let chosen = models.first(where: { $0.id == local.selectedID }) else {
+            status = "The chosen local model is not running, so there is no summary."
+            return
+        }
+        summary = ""
+        summaryFraction = 0
+        summaryEta = nil
+        summaryVisible = true
+        summarising = true
+        status = "Summarising with \(chosen.label)"
+        let started = Date()
+        do {
+            let result = try await LocalLLM.summarise(source, with: chosen) { done, total in
+                summaryFraction = Double(done) / Double(total)
+                let elapsed = Date().timeIntervalSince(started)
+                summaryEta = elapsed / Double(max(done, 1)) * Double(total - done)
+                summaryEtaStamp = Date()
+            }
+            summary = result.description + "\n\n" + result.summary
+            status = "Done: summarised with \(chosen.label)."
+        } catch {
+            if Task.isCancelled { return }
+            summaryVisible = !summary.isEmpty
+            status = "Summarising failed (\(error.localizedDescription))."
+        }
+        summarising = false
+    }
+
     /// Clears everything, so that another file can be dropped.
     func discard() {
         polishTask?.cancel()
         polishTask = nil
+        summaryTask?.cancel()
+        summaryTask = nil
+        summary = ""
+        summaryVisible = false
+        summarising = false
+        summaryFraction = 0
+        summaryEta = nil
         original = ""
         polished = ""
         polishedParts = []
@@ -548,7 +623,7 @@ struct ContentView: View {
         transcribing = false
         fraction = 0
         polishFraction = 0
-        etaSeconds = nil
+        polishEta = nil
         sourceName = "transcript"
         sourceFile = ""
         audioSeconds = nil

@@ -41,9 +41,11 @@ If LM Studio (port 1234), Ollama (port 11434) or llama.cpp's `llama-server` (por
 
 The transcript stays on show, and can be copied or saved, while the pass runs. The polished version appears beside it and grows as the model works, with its own progress bar, a time estimate, and its own Copy and Save buttons.
 
-The pass works in independent calls, each a fresh conversation. A call is given the next 500 words or so and returns its first three paragraphs; the app keeps them, strips the lines they cover from the front of the transcript, and repeats with the rest. A paragraph that reaches the end of the window is left for the next call, since it may be cut off. When no paragraph of an answer fits the original (its length differs by more than a quarter, or its markers are wrong), the first lines of the window are kept as transcribed. Reasoning is switched off in the request, because a reasoning model spends most of its time thinking.
+The pass works in independent calls, each a fresh conversation. A window of about 500 words, beginning and ending at sentence ends, is given to the model, which returns it as paragraphs of its own choosing. The app finds where each paragraph ends in the original words, keeps all but the last (the thought may continue), and starts the next window at the word after the last one kept, so nothing is repeated or cut mid-sentence. An answer that cannot be matched to the text is asked for once more; if that fails too, whole sentences of the original are kept as transcribed and shown in orange. Each rejected answer is written to `~/Library/Logs/Transcriber/polish-rejected.log`, on this Mac only, so that it can be looked at. Reasoning is switched off in the request, because a reasoning model spends most of its time thinking.
 
-The app contacts only `127.0.0.1`; the transcript never leaves the Mac. A model can change a word it should not, so read the polished text against the transcript before relying on it.
+The "Summarise" button, which needs a chosen model, adds a third pane with a one-line description of the recording and a summary. It works on the polished text if there is any, in blocks of about 1,000 words, each summarised with the summaries of the blocks before it as notes, and then the block summaries are summarised as a whole. It runs only when the button is pressed.
+
+The app contacts only `127.0.0.1`; the transcript never leaves the Mac. A model can change a word it should not, so read the polished text against the transcript before relying on it. The window shows the length of the audio.
 
 One file is held at a time: after a transcription, the window accepts no further file until "Discard Transcription" is pressed, which clears both versions and cancels a polish in progress.
 

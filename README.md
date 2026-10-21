@@ -47,6 +47,8 @@ The "Summarise" button, which needs a chosen model, adds a third pane with a one
 
 The app contacts only `127.0.0.1`; the transcript never leaves the Mac. A model can change a word it should not, so read the polished text against the transcript before relying on it. The window shows the length of the audio.
 
+The generated text (the transcript, the polished text and the summary) cannot be edited in the app; select it, copy it, or save it.
+
 One file is held at a time: after a transcription, the window accepts no further file until "Discard Transcription" is pressed, which clears both versions and cancels a polish in progress.
 
 ## Configuration

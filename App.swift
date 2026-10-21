@@ -287,6 +287,7 @@ struct ContentView: View {
         }
         .padding(16)
         .frame(minWidth: 640, minHeight: 700)
+        .background(WindowFloor(minSize: NSSize(width: 640, height: 700)))
         .background(GeometryReader { g in
             Color.clear
                 .onAppear { windowHeight = g.size.height }
@@ -414,7 +415,7 @@ struct ContentView: View {
                 Text(title).font(.headline)
                 if let note { Text(note).font(.caption).foregroundColor(.orange) }
             }
-            content().border(Color.secondary.opacity(0.3))
+            content().frame(minHeight: 80, maxHeight: .infinity).border(Color.secondary.opacity(0.3))
             HStack {
                 if !text.isEmpty && complete {
                     Text("\(count) \(count == 1 ? "word" : "words")")
@@ -1058,6 +1059,24 @@ struct ContentView: View {
 
 final class Delegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { true }
+}
+
+/// Keeps the window at least as large as its content needs, including a frame restored at a smaller size.
+struct WindowFloor: NSViewRepresentable {
+    let minSize: NSSize
+    final class Probe: NSView {
+        var minSize = NSSize.zero
+        override func viewDidMoveToWindow() {
+            guard let window else { return }
+            window.contentMinSize = minSize
+            var size = window.contentRect(forFrameRect: window.frame).size
+            size.width = max(size.width, minSize.width)
+            size.height = max(size.height, minSize.height)
+            if size != window.contentRect(forFrameRect: window.frame).size { window.setContentSize(size) }
+        }
+    }
+    func makeNSView(context: Context) -> Probe { let p = Probe(); p.minSize = minSize; return p }
+    func updateNSView(_ view: Probe, context: Context) { view.minSize = minSize; view.window?.contentMinSize = minSize }
 }
 
 @main

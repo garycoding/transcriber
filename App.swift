@@ -160,7 +160,8 @@ func runWhisper(_ whisper: String, wav: URL, duration: Double, progress: @escapi
     return segments.joined(separator: " ")
 }
 
-func transcribe(_ input: URL, progress: @escaping (Double) -> Void, onText: @escaping (String) -> Void) throws -> String {
+func transcribe(_ input: URL, progress: @escaping (Double) -> Void, onText: @escaping (String) -> Void,
+                onDuration: @escaping (Double) -> Void) throws -> String {
     guard let whisper = Bundle.main.url(forResource: "whisper-cli", withExtension: nil)?.path else {
         throw TranscribeError.missing("The app is incomplete: whisper-cli is missing from its bundle.")
     }
@@ -173,6 +174,7 @@ func transcribe(_ input: URL, progress: @escaping (Double) -> Void, onText: @esc
     guard cs == 0 else { throw TranscribeError.failed("Could not decode the audio file.") }
     let audio = try AVAudioFile(forReading: wav)
     let duration = Double(audio.length) / audio.processingFormat.sampleRate
+    onDuration(duration)
     return try runWhisper(whisper, wav: wav, duration: duration, progress: progress, onText: onText)
 }
 
@@ -206,9 +208,62 @@ struct ReadOnlyText: NSViewRepresentable {
     }
 }
 
+/// The polished text: scrollable, selectable, and editable once the polish has finished. New paragraphs
+/// are appended in place, and those kept as transcribed are shown in orange. The colours stay when the
+/// text is edited.
+struct PolishedText: NSViewRepresentable {
+    let parts: [PolishPart]
+    let isEditable: Bool
+    let onEdit: (String) -> Void
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var onEdit: (String) -> Void
+        var applied = 0
+        init(onEdit: @escaping (String) -> Void) { self.onEdit = onEdit }
+        func textDidChange(_ notification: Notification) {
+            if let view = notification.object as? NSTextView { onEdit(view.string) }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onEdit: onEdit) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        let view = scroll.documentView as! NSTextView
+        view.delegate = context.coordinator
+        view.isSelectable = true
+        view.allowsUndo = true
+        view.drawsBackground = false
+        view.font = NSFont.preferredFont(forTextStyle: .body)
+        view.textColor = .textColor
+        view.textContainerInset = NSSize(width: 4, height: 8)
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        let view = scroll.documentView as! NSTextView
+        let coordinator = context.coordinator
+        coordinator.onEdit = onEdit
+        view.isEditable = isEditable
+        if parts.count < coordinator.applied {
+            view.string = ""
+            coordinator.applied = 0
+        }
+        guard let storage = view.textStorage else { return }
+        while coordinator.applied < parts.count {
+            let part = parts[coordinator.applied]
+            storage.append(NSAttributedString(
+                string: (coordinator.applied > 0 ? "\n\n" : "") + part.text,
+                attributes: [.font: view.font as Any, .foregroundColor: part.fallback ? NSColor.systemOrange : NSColor.textColor]))
+            coordinator.applied += 1
+        }
+    }
+}
+
 struct ContentView: View {
     @State private var original = ""
     @State private var polished = ""
+    @State private var polishedParts: [PolishPart] = []
     @State private var polishVisible = false
     @State private var status = "Drop an .m4a or .mp3 file here"
     @State private var transcribing = false
@@ -221,6 +276,7 @@ struct ContentView: View {
     @State private var targeted = false
     @State private var sourceName = "transcript"
     @State private var sourceFile = ""
+    @State private var audioSeconds: Double?
     @StateObject private var model = ModelStore()
     @StateObject private var local = LocalModels()
 
@@ -235,11 +291,14 @@ struct ContentView: View {
             polishPicker
             dropZone
             HStack(spacing: 12) {
-                pane("As transcribed", text: $original, isEditable: !transcribing, complete: !transcribing,
-                     fileName: sourceName + ".txt")
+                pane("As transcribed", text: original, complete: !transcribing, fileName: sourceName + ".txt") {
+                    if transcribing { ReadOnlyText(text: original) } else { TextEditor(text: $original).font(.body) }
+                }
                 if polishVisible {
-                    pane("Polished", text: $polished, isEditable: !polishing, complete: !polishing,
-                         fileName: sourceName + " (polished).txt")
+                    pane("Polished", text: polished, complete: !polishing, fileName: sourceName + " (polished).txt",
+                         note: polishedParts.contains(where: \.fallback) ? "Orange text was left as transcribed." : nil) {
+                        PolishedText(parts: polishedParts, isEditable: !polishing, onEdit: { polished = $0 })
+                    }
                 }
             }
         }
@@ -268,6 +327,9 @@ struct ContentView: View {
                             .help(transcribing ? "Available when transcribing has finished" : "Clear everything so that another file can be dropped")
                     }
                 }
+                if let seconds = audioSeconds {
+                    Text("Audio length \(hms(seconds))").font(.caption).foregroundColor(.secondary)
+                }
                 if transcribing || polishing {
                     progressRow("Transcribing", fraction)
                 }
@@ -280,7 +342,13 @@ struct ContentView: View {
             }
             .padding(.horizontal, 16)
         }
-        .frame(height: polishing ? 130 : 80)
+        .frame(height: polishing ? 146 : 96)
+    }
+
+    /// A length of time as h:mm:ss.
+    func hms(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d:%02d", total / 3600, total % 3600 / 60, total % 60)
     }
 
     func progressRow(_ title: String, _ value: Double) -> some View {
@@ -300,21 +368,17 @@ struct ContentView: View {
         return "About \(minutes / 60) h \(String(format: "%02d", minutes % 60)) min left"
     }
 
-    func pane(_ title: String, text: Binding<String>, isEditable: Bool, complete: Bool, fileName: String) -> some View {
-        let count = text.wrappedValue.split(whereSeparator: \.isWhitespace).count
+    func pane<Content: View>(_ title: String, text: String, complete: Bool, fileName: String, note: String? = nil,
+                             @ViewBuilder content: () -> Content) -> some View {
+        let count = text.split(whereSeparator: \.isWhitespace).count
         return VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.headline)
-            Group {
-                if isEditable {
-                    TextEditor(text: text).font(.body)
-                } else {
-                    // While the text is still arriving: scrollable and selectable, but not editable.
-                    ReadOnlyText(text: text.wrappedValue)
-                }
-            }
-            .border(Color.secondary.opacity(0.3))
             HStack {
-                if !text.wrappedValue.isEmpty && complete {
+                Text(title).font(.headline)
+                if let note { Text(note).font(.caption).foregroundColor(.orange) }
+            }
+            content().border(Color.secondary.opacity(0.3))
+            HStack {
+                if !text.isEmpty && complete {
                     Text("\(count) \(count == 1 ? "word" : "words")")
                         .foregroundColor(.secondary)
                         .monospacedDigit()
@@ -322,9 +386,9 @@ struct ContentView: View {
                 Spacer()
                 Button("Copy") {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text.wrappedValue, forType: .string)
-                }.disabled(text.wrappedValue.isEmpty || !complete)
-                Button("Save as .txt…") { save(text.wrappedValue, as: fileName) }.disabled(text.wrappedValue.isEmpty || !complete)
+                    NSPasteboard.general.setString(text, forType: .string)
+                }.disabled(text.isEmpty || !complete)
+                Button("Save as .txt…") { save(text, as: fileName) }.disabled(text.isEmpty || !complete)
             }
         }
     }
@@ -404,12 +468,14 @@ struct ContentView: View {
         polishVisible = false
         sourceName = url.deletingPathExtension().lastPathComponent
         sourceFile = url.lastPathComponent
+        audioSeconds = nil
         fraction = 0
         status = "Transcribing \(url.lastPathComponent)"
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result {
                 try transcribe(url, progress: { f in DispatchQueue.main.async { fraction = f } },
-                               onText: { t in DispatchQueue.main.async { original += (original.isEmpty ? "" : " ") + t } })
+                               onText: { t in DispatchQueue.main.async { original += (original.isEmpty ? "" : " ") + t } },
+                               onDuration: { d in DispatchQueue.main.async { audioSeconds = d } })
             }
             DispatchQueue.main.async {
                 transcribing = false
@@ -443,6 +509,7 @@ struct ContentView: View {
             return
         }
         polished = ""
+        polishedParts = []
         polishVisible = true
         polishFraction = 0
         etaSeconds = nil
@@ -450,8 +517,9 @@ struct ContentView: View {
         status = "Polishing with \(chosen.label)"
         let started = Date()
         do {
-            let kept = try await LocalLLM.polish(text, with: chosen) { newText, consumed, total in
-                polished += (polished.isEmpty ? "" : "\n\n") + newText
+            let kept = try await LocalLLM.polish(text, with: chosen) { parts, consumed, total in
+                polishedParts += parts
+                polished = polishedParts.map(\.text).joined(separator: "\n\n")
                 polishFraction = Double(consumed) / Double(total)
                 let elapsed = Date().timeIntervalSince(started)
                 etaSeconds = elapsed / Double(max(consumed, 1)) * Double(total - consumed)
@@ -459,7 +527,7 @@ struct ContentView: View {
             }
             status = done + " Polished with \(chosen.label)."
             if kept > 0 {
-                status += " \(kept) passage\(kept == 1 ? "" : "s") left as transcribed, because the model's answer did not fit the text."
+                status += " \(kept) stretch\(kept == 1 ? "" : "es") could not be polished and \(kept == 1 ? "is" : "are") left as transcribed, in orange."
             }
         } catch {
             if Task.isCancelled { return }
@@ -474,6 +542,7 @@ struct ContentView: View {
         polishTask = nil
         original = ""
         polished = ""
+        polishedParts = []
         polishVisible = false
         polishing = false
         transcribing = false
@@ -482,6 +551,7 @@ struct ContentView: View {
         etaSeconds = nil
         sourceName = "transcript"
         sourceFile = ""
+        audioSeconds = nil
         status = "Drop an .m4a or .mp3 file here"
     }
 

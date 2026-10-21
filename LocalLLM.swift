@@ -13,22 +13,31 @@ struct LocalModel: Identifiable, Hashable {
     var label: String { "\(server.rawValue): \(name)" }
 }
 
+/// One paragraph of the polished text. `fallback` marks words kept as transcribed.
+struct PolishPart: Equatable {
+    let text: String
+    let fallback: Bool
+}
+
 enum LocalLLM {
-    /// The instruction for one call. Every call is a fresh conversation about a window of the transcript.
-    static func systemPrompt(final: Bool) -> String {
-        """
+    /// The instruction for one call. Every call is a fresh conversation about one window of the transcript.
+    static func systemPrompt(unpunctuated: Bool) -> String {
+        let edges = unpunctuated
+            ? "The text has little or no punctuation, so find its sentences yourself. It ends in the middle of a sentence: leave that unfinished last sentence out of your answer."
+            : "The text begins at the start of a sentence and ends at the end of a sentence."
+        return """
         You edit machine-made transcripts of speech. Keep the speaker's words and meaning. \
         Add correct punctuation and capitalisation, correct words that are clearly misheard when the context makes the right word certain, \
-        remove stutters and accidental repeats such as "the the", and divide the text into paragraphs where the topic or the thought changes. \
+        remove stutters and accidental repeats such as "the the", and divide the text into paragraphs where the topic or the thought changes; \
+        let the text itself decide how long each paragraph is. \
         Do not summarise, shorten, add, explain or comment. \
         Write plain text only: no LaTeX, no Markdown, no symbols or special formatting. Where a formula is spoken, write it out as the words that were said. \
-        The input lines are numbered; do not copy the numbers into the text. \
-        \(final ? "Write all the paragraphs." : "The input is only the start of a longer transcript. Write only its first three paragraphs, and stop at the end of the third.") \
-        Write a blank line between paragraphs. After each paragraph, on a line of its own, write [through N], where N is the number of the last input line that the paragraph covers.
+        Write a blank line between paragraphs. \(edges)
         """
     }
 
     static let windowWords = 500
+    static let maxWindowWords = 900
 
     /// The servers that are looked for, on their default ports.
     static func discover() async -> [LocalModel] {
@@ -56,13 +65,13 @@ enum LocalLLM {
             .map { LocalModel(server: server, port: port, name: $0) }
     }
 
-    private static func complete(_ model: LocalModel, system: String, user: String) async throws -> String {
+    private static func complete(_ model: LocalModel, system: String, user: String, temperature: Double) async throws -> String {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(model.port)/v1/chat/completions")!)
         request.httpMethod = "POST"
         request.timeoutInterval = 600
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
-            "model": model.name, "temperature": 0.2, "stream": false, "reasoning_effort": "none",
+            "model": model.name, "temperature": temperature, "stream": false, "reasoning_effort": "none",
             "messages": [["role": "system", "content": system], ["role": "user", "content": user]],
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -90,99 +99,179 @@ enum LocalLLM {
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func words(_ text: String) -> Int {
-        text.split(whereSeparator: \.isWhitespace).count
+    // MARK: Sentences and windows
+
+    private static let notSentenceEnds: Set<String> = ["mr.", "mrs.", "ms.", "dr.", "st.", "vs.", "prof.", "no.", "etc."]
+
+    /// Whether a word ends a sentence: it ends in . ? or !, perhaps followed by a closing quote or bracket.
+    static func sentenceEnd(_ word: String) -> Bool {
+        if notSentenceEnds.contains(word.lowercased()) { return false }
+        let trimmed = word.trimmingCharacters(in: CharacterSet(charactersIn: "\"')]”’"))
+        guard let last = trimmed.last else { return false }
+        return last == "." || last == "?" || last == "!"
     }
 
-    /// Reads the model's answer: paragraphs, each followed by a [through N] line. A paragraph is
-    /// accepted only when N advances, stays inside the window, and the paragraph's length is within
-    /// a quarter of the length of the lines it covers. Reading stops at the first paragraph that fails.
-    static func parse(_ answer: String, window: [String], final: Bool) -> [(text: String, through: Int)] {
-        let marker = try! NSRegularExpression(pattern: #"^\W*through\s+(\d+)\W*$"#, options: .caseInsensitive)
-        var result: [(text: String, through: Int)] = []
-        var buffer: [String] = []
-        var previous = 0
-        func accept(_ text: String, _ through: Int) -> Bool {
-            guard through > previous, through <= window.count, !text.isEmpty else { return false }
-            let source = words(window[previous..<through].joined(separator: " "))
-            let n = words(text)
-            guard Double(n) >= 0.75 * Double(source), Double(n) <= 1.25 * Double(source) else { return false }
-            result.append((text, through))
-            previous = through
-            return true
+    /// The next window: it starts at `pos`, which is the start of a sentence, and ends at a sentence
+    /// end near `windowWords` words on, looking back no further than 40% of the window and forward no
+    /// further than `maxWindowWords`. Only when there is no sentence end in all that is the window cut
+    /// at the target, and `unpunctuated` is set. `end` is exclusive.
+    static func window(_ words: [String], from pos: Int) -> (end: Int, unpunctuated: Bool) {
+        let total = words.count
+        if total - pos <= windowWords + 100 { return (total, false) }
+        let target = pos + windowWords
+        var e = target
+        while e > pos + windowWords * 2 / 5 {
+            if sentenceEnd(words[e - 1]) { return (e, false) }
+            e -= 1
         }
+        e = target + 1
+        while e <= min(pos + maxWindowWords, total) {
+            if sentenceEnd(words[e - 1]) { return (e, false) }
+            e += 1
+        }
+        return (target, true)
+    }
+
+    // MARK: Matching the answer to the text
+
+    /// Words reduced for comparison: lower case, no punctuation, hyphens and dashes as spaces.
+    static func tokens(_ text: String) -> [String] {
+        text.replacingOccurrences(of: "’", with: "'")
+            .replacingOccurrences(of: "[-–—_]", with: " ", options: .regularExpression)
+            .split(whereSeparator: \.isWhitespace)
+            .map { String($0.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "'" }) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// The paragraphs of an answer: runs of lines between blank lines.
+    static func paragraphs(of answer: String) -> [String] {
+        var out: [String] = []
+        var current: [String] = []
         for raw in answer.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            if let m = marker.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-               let r = Range(m.range(at: 1), in: line), let n = Int(line[r]) {
-                let text = buffer.joined(separator: " ")
-                buffer = []
-                if !accept(text, n) { return result }
-            } else if !line.isEmpty {
-                buffer.append(line)
+            if line.isEmpty {
+                if !current.isEmpty { out.append(current.joined(separator: " ")); current = [] }
+            } else {
+                current.append(line)
             }
         }
-        if final, previous < window.count, !buffer.isEmpty { _ = accept(buffer.joined(separator: " "), window.count) }
-        return result
-    }
-
-    /// The transcript as numbered units for the model: its sentences, and any very long sentence
-    /// cut into pieces of about forty words.
-    static func lines(of text: String) -> [String] {
-        var out: [String] = []
-        text.enumerateSubstrings(in: text.startIndex..., options: .bySentences) { sentence, _, _, _ in
-            guard let sentence else { return }
-            let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty { return }
-            let w = trimmed.split(whereSeparator: \.isWhitespace).map(String.init)
-            if w.count <= 80 { out.append(trimmed); return }
-            for start in stride(from: 0, to: w.count, by: 40) {
-                out.append(w[start..<min(start + 40, w.count)].joined(separator: " "))
-            }
-        }
+        if !current.isEmpty { out.append(current.joined(separator: " ")) }
         return out
     }
 
-    /// Polishes the transcript by repeated, independent calls. Each call is given the next window
-    /// of about `windowWords` words and returns its first paragraphs; those are kept, the lines
-    /// they cover are stripped from the front, and the rest goes into the next call. A paragraph
-    /// that reaches the end of the window may be cut off, so it is left for the next call unless it
-    /// is the only one. When no paragraph of an answer can be trusted, the first lines of the window
-    /// are kept as transcribed. Returns how many times that happened.
-    static func polish(_ text: String, with model: LocalModel,
-                       onProgress: @MainActor @escaping (_ newText: String, _ consumedWords: Int, _ totalWords: Int) -> Void) async throws -> Int {
-        let lines = lines(of: text)
-        let totalWords = max(1, lines.reduce(0) { $0 + words($1) })
-        var index = 0
-        var consumed = 0
-        var kept = 0
-        while index < lines.count {
-            try Task.checkCancellation()
-            var window: [String] = []
-            var count = 0
-            while index + window.count < lines.count, count < windowWords || window.isEmpty {
-                let line = lines[index + window.count]
-                window.append(line)
-                count += words(line)
+    /// Finds where each paragraph of the answer ends in the window, by matching the paragraph's last
+    /// words, so that the next window can start at the next word. Reading stops at the first paragraph
+    /// that does not begin where the last one ended, or whose last words cannot be found, or whose
+    /// length differs from the text it covers by more than 30%. `owner` maps each token to its word.
+    static func align(_ paragraphs: [String], wtoks: [String], owner: [Int]) -> [(text: String, endWord: Int)] {
+        var result: [(text: String, endWord: Int)] = []
+        var prev = 0
+        for text in paragraphs {
+            let p = tokens(text)
+            guard p.count >= 3, prev < wtoks.count else { break }
+            let head = p.prefix(4)
+            let near = Set(wtoks[prev..<min(prev + 10, wtoks.count)])
+            guard head.filter({ near.contains($0) }).count >= min(2, head.count) else { break }
+            let k = min(6, p.count)
+            let tail = Array(p.suffix(k))
+            let lo = max(prev + k - 1, prev + Int(0.7 * Double(p.count)) - 1)
+            let hi = min(wtoks.count - 1, prev + Int(1.35 * Double(p.count)) + 2)
+            guard lo <= hi else { break }
+            var best = -1
+            var bestScore = -1
+            var bestDistance = Int.max
+            for j in lo...hi {
+                var score = 0
+                for t in 0..<k where wtoks[j - k + 1 + t] == tail[t] { score += 1 }
+                let distance = abs((j - prev + 1) - p.count)
+                if score > bestScore || (score == bestScore && distance < bestDistance) {
+                    best = j; bestScore = score; bestDistance = distance
+                }
             }
-            let final = index + window.count >= lines.count
-            let numbered = window.enumerated().map { "\($0.offset + 1): \($0.element)" }.joined(separator: "\n")
-            let answer = clean(try await complete(model, system: systemPrompt(final: final), user: numbered))
-            var taken = parse(answer, window: window, final: final)
-            if !final, taken.count > 1, taken.last!.through == window.count { taken.removeLast() }
-            if taken.isEmpty {
-                var n = 0
-                var w = 0
-                while n < window.count, w < 150 || n == 0 { w += words(window[n]); n += 1 }
-                taken = [(window[0..<n].joined(separator: " "), n)]
-                kept += 1
-            }
-            let through = taken.last!.through
-            consumed += words(window[0..<through].joined(separator: " "))
-            index += through
-            await onProgress(taken.map(\.text).joined(separator: "\n\n"), consumed, totalWords)
+            guard best >= 0, bestScore >= max(3, k - 2) else { break }
+            let ratio = Double(p.count) / Double(best - prev + 1)
+            guard ratio >= 0.7, ratio <= 1.3 else { break }
+            result.append((text, owner[best]))
+            prev = best + 1
         }
-        return kept
+        return result
+    }
+
+    // MARK: The log of rejected answers
+
+    static let logURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/Transcriber/polish-rejected.log")
+
+    /// Records an answer that could not be used, on this Mac only, so that it can be looked at.
+    static func logRejected(_ model: LocalModel, attempt: Int, sent: [String], answer: String) {
+        let entry = """
+        == \(ISO8601DateFormatter().string(from: Date())) \(model.label), attempt \(attempt): no paragraph of the answer matched the text
+        -- sent (\(sent.count) words), the first 60:
+        \(sent.prefix(60).joined(separator: " "))
+        -- answer:
+        \(answer.prefix(6000))
+
+
+        """
+        try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let handle = try? FileHandle(forWritingTo: logURL) {
+            handle.seekToEndOfFile()
+            handle.write(Data(entry.utf8))
+            try? handle.close()
+        } else {
+            try? entry.write(to: logURL, atomically: true, encoding: .utf8)
+        }
+    }
+
+    // MARK: The polish
+
+    /// Polishes the transcript by repeated, independent calls. Each call is given a window that begins
+    /// and ends at sentence ends and returns the window as paragraphs of the model's own choosing.
+    /// Each paragraph is matched to the original words; the last one is left for the next call, since
+    /// the thought may continue, and the next window starts at the word after the last one kept. An
+    /// answer with no usable paragraph is asked for once more. If that fails too, whole sentences of
+    /// the original are kept as transcribed and marked as such. Returns how many times that happened.
+    static func polish(_ text: String, with model: LocalModel,
+                       onProgress: @MainActor @escaping (_ parts: [PolishPart], _ consumedWords: Int, _ totalWords: Int) -> Void) async throws -> Int {
+        let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        var pos = 0
+        var fallbacks = 0
+        while pos < words.count {
+            try Task.checkCancellation()
+            let (end, unpunctuated) = window(words, from: pos)
+            let slice = Array(words[pos..<end])
+            var wtoks: [String] = []
+            var owner: [Int] = []
+            for (i, word) in slice.enumerated() {
+                for token in tokens(word) { wtoks.append(token); owner.append(i) }
+            }
+            let final = end >= words.count
+            var accepted: [(text: String, endWord: Int)] = []
+            for attempt in 1...2 {
+                let answer = clean(try await complete(model, system: systemPrompt(unpunctuated: unpunctuated),
+                                                      user: slice.joined(separator: " "), temperature: attempt == 1 ? 0.2 : 0.6))
+                accepted = align(paragraphs(of: answer), wtoks: wtoks, owner: owner)
+                if !accepted.isEmpty { break }
+                logRejected(model, attempt: attempt, sent: slice, answer: answer)
+            }
+            var parts: [PolishPart]
+            var used: Int
+            if accepted.isEmpty {
+                var n = min(slice.count, 120)
+                if slice.count > 100, let e = (100...min(slice.count, 250)).first(where: { sentenceEnd(slice[$0 - 1]) }) { n = e }
+                parts = [PolishPart(text: slice[0..<n].joined(separator: " "), fallback: true)]
+                used = n
+                fallbacks += 1
+            } else {
+                var kept = accepted
+                if !final, kept.count > 1 { kept.removeLast() }
+                parts = kept.map { PolishPart(text: $0.text, fallback: false) }
+                used = kept.last!.endWord + 1
+            }
+            pos += used
+            await onProgress(parts, pos, words.count)
+        }
+        return fallbacks
     }
 }
 

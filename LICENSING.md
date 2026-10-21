@@ -17,11 +17,9 @@ Different kinds of content carry different licenses (encoded in [`REUSE.toml`](R
 
 ## Third-party software
 
-Transcriber bundles no third-party software. At run time it starts, as a separate process, the following MIT-licensed software, which the user installs:
+The built app bundles `whisper-cli`, built from whisper.cpp (MIT, <https://github.com/ggml-org/whisper.cpp>), which includes ggml (MIT). The whisper.cpp licence text is shipped inside the app as `Contents/Resources/whisper.cpp-LICENSE.txt`. It is run as a separate process.
 
-- whisper.cpp (`whisper-cli`), MIT, <https://github.com/ggml-org/whisper.cpp>
-- ggml, MIT, <https://github.com/ggml-org/ggml>
-- the OpenAI Whisper model weights, as ggml conversions, MIT, <https://github.com/openai/whisper>
+The app downloads, on first launch, the OpenAI Whisper "small" model as a ggml conversion (MIT, <https://github.com/openai/whisper>) from <https://huggingface.co/ggerganov/whisper.cpp>. The model is not part of this repository or of the app bundle.
 
 ## REUSE compliance
 

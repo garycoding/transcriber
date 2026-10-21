@@ -4,6 +4,17 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+## [v0.5.2] - 2026-10-21
+
+### Highlights
+
+_Highlights were not generated for this release._
+
+### Docs
+
+- Link the download page from the README (#19)
+- Add a Copy button to the download page's Terminal command (#20)
+
 ## [v0.5.1] - 2026-10-21
 
 ### Highlights

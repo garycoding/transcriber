@@ -286,6 +286,10 @@ struct ContentView: View {
     @State private var sourceName = "transcript"
     @State private var sourceFile = ""
     @State private var audioSeconds: Double?
+    @State private var transcribeSeconds: Double?
+    @State private var polishSeconds: Double?
+    @State private var summarySeconds: Double?
+    @State private var descriptionSeconds: Double?
     @StateObject private var model = ModelStore()
     @StateObject private var local = LocalModels()
 
@@ -352,6 +356,9 @@ struct ContentView: View {
                 if let seconds = audioSeconds {
                     Text("Audio length \(hms(seconds))").font(.caption).foregroundColor(.secondary)
                 }
+                if let line = timingsText {
+                    Text(line).font(.caption).foregroundColor(.secondary)
+                }
                 if transcribing || polishing {
                     progressRow("Transcribing", fraction)
                 }
@@ -373,6 +380,25 @@ struct ContentView: View {
         .frame(height: zoneHeight)
     }
 
+    /// How long each step took, as far as each has finished.
+    var timingsText: String? {
+        var parts: [String] = []
+        if let t = transcribeSeconds { parts.append("Transcribed in \(elapsed(t))") }
+        if let t = polishSeconds { parts.append("polished in \(elapsed(t))") }
+        if let t = summarySeconds { parts.append("summary in \(elapsed(t))") }
+        if let t = descriptionSeconds { parts.append("description in \(elapsed(t))") }
+        guard !parts.isEmpty else { return nil }
+        let line = parts.joined(separator: ", ")
+        return line.prefix(1).uppercased() + line.dropFirst()
+    }
+
+    /// A time taken as m:ss, or h:mm:ss from an hour on.
+    func elapsed(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        if total >= 3600 { return String(format: "%d:%02d:%02d", total / 3600, total % 3600 / 60, total % 60) }
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
     /// A length of time as h:mm:ss.
     func hms(_ seconds: Double) -> String {
         let total = Int(seconds.rounded())
@@ -380,7 +406,7 @@ struct ContentView: View {
     }
 
     var zoneHeight: CGFloat {
-        80 + (audioSeconds != nil ? 18 : 0) + (transcribing || polishing || summarising ? 28 : 0)
+        80 + (audioSeconds != nil ? 18 : 0) + (timingsText != nil ? 16 : 0) + (transcribing || polishing || summarising ? 28 : 0)
             + (polishing ? 46 : 0) + (summarising ? 46 : 0)
     }
 
@@ -528,6 +554,11 @@ struct ContentView: View {
         guard ["m4a", "mp3"].contains(ext) else { status = "Unsupported file type: .\(ext)"; return }
         guard model.state == .ready else { status = "The speech model is not ready yet; drop the file again when it is."; return }
         transcribing = true
+        transcribeSeconds = nil
+        polishSeconds = nil
+        summarySeconds = nil
+        descriptionSeconds = nil
+        let began = Date()
         original = ""
         polished = ""
         polishVisible = false
@@ -550,6 +581,7 @@ struct ContentView: View {
                 transcribing = false
                 switch result {
                 case .success(let text):
+                    transcribeSeconds = Date().timeIntervalSince(began)
                     original = text
                     polishTask = Task { await polishIfChosen(url.lastPathComponent, text: text) }
                 case .failure(let e):
@@ -594,6 +626,7 @@ struct ContentView: View {
                 polishEta = elapsed / Double(max(consumed, 1)) * Double(total - consumed)
                 polishEtaStamp = Date()
             }
+            polishSeconds = Date().timeIntervalSince(started)
             status = done + " Polished with \(chosen.label)."
             if kept > 0 {
                 status += " \(kept) stretch\(kept == 1 ? "" : "es") could not be polished and \(kept == 1 ? "is" : "are") left as transcribed, in orange."
@@ -621,6 +654,8 @@ struct ContentView: View {
         }
         summaryDescription = ""
         summaryBody = ""
+        summarySeconds = nil
+        descriptionSeconds = nil
         summaryFraction = 0
         summaryEta = nil
         summaryVisible = true
@@ -636,6 +671,8 @@ struct ContentView: View {
             }
             summaryDescription = result.description
             summaryBody = result.summary
+            summarySeconds = result.summarySeconds
+            descriptionSeconds = result.descriptionSeconds
             showSummaryTab = true
             status = "Done: summarised with \(chosen.label)."
         } catch {
@@ -671,6 +708,10 @@ struct ContentView: View {
         sourceName = "transcript"
         sourceFile = ""
         audioSeconds = nil
+        transcribeSeconds = nil
+        polishSeconds = nil
+        summarySeconds = nil
+        descriptionSeconds = nil
         status = "Drop an .m4a or .mp3 file here"
     }
 

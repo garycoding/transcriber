@@ -336,7 +336,9 @@ enum LocalLLM {
     /// summaries of the blocks before it as notes, then the block summaries are summarised as a whole,
     /// and a one-line description is written from that. `onProgress` is given steps done of steps in all.
     static func summarise(_ text: String, with model: LocalModel,
-                          onProgress: @MainActor @escaping (_ done: Int, _ total: Int) -> Void) async throws -> (description: String, summary: String) {
+                          onProgress: @MainActor @escaping (_ done: Int, _ total: Int) -> Void) async throws
+        -> (description: String, summary: String, summarySeconds: Double, descriptionSeconds: Double) {
+        let started = Date()
         let parts = blocks(of: text)
         let total = parts.count + 2
         var sums: [String] = []
@@ -358,11 +360,13 @@ enum LocalLLM {
                                  temperature: 0.2, maxTokens: 900)
         await onProgress(parts.count + 1, total)
         try Task.checkCancellation()
+        let summarySeconds = Date().timeIntervalSince(started)
+        let descriptionStarted = Date()
         var description = try await complete(model, system: descriptionPrompt, user: summary, temperature: 0.2, maxTokens: 60)
         description = description.split(separator: "\n").first.map(String.init) ?? description
         description = description.trimmingCharacters(in: CharacterSet(charactersIn: " \"'.")).trimmingCharacters(in: .whitespaces)
         await onProgress(total, total)
-        return (description, summary)
+        return (description, summary, summarySeconds, Date().timeIntervalSince(descriptionStarted))
     }
 }
 

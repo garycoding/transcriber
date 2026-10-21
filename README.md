@@ -15,7 +15,7 @@ Version 0.1.0, not yet released. Verified: the transcription path on a generated
 
 Apple silicon Macs only, macOS 13 or later.
 
-1. Download `Transcriber-<version>-macos.zip` from the [Releases](https://github.com/garycoding/transcriber/releases) page, unzip it, and move `Transcriber.app` to `/Applications`.
+1. Download `Transcriber-<version>-macos.dmg` from the [Releases](https://github.com/garycoding/transcriber/releases) page, open it, and drag `Transcriber.app` onto the Applications shortcut.
 2. The app is not signed with an Apple Developer ID, so macOS quarantines the download. Clear that once in Terminal:
 
 ```bash
@@ -41,7 +41,7 @@ There is no configuration file. The speech model is stored at `~/Library/Applica
 
 ## Releasing
 
-Tag-driven, from `main`, as the handbook's [`releases.md`](https://github.com/ParkviewLab/handbook/blob/main/docs/releases.md) describes. The version lives in `VERSION.txt` only. The release workflow builds the app on a macOS runner and attaches `Transcriber-<version>-macos.zip` to the GitHub Release.
+Tag-driven, from `main`, as the handbook's [`releases.md`](https://github.com/ParkviewLab/handbook/blob/main/docs/releases.md) describes. The version lives in `VERSION.txt` only. The release workflow builds the app on a macOS runner and attaches `Transcriber-<version>-macos.dmg` to the GitHub Release.
 
 ## Licence
 

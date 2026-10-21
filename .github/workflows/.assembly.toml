@@ -4,4 +4,4 @@ header = "# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>\
 
 [[slots]]
 job = "installers"
-reason = "one macOS build with swiftc and ditto, not electron-builder; it keeps the installers-macos artifact contract"
+reason = "one macOS build with swiftc and hdiutil, not electron-builder; it keeps the installers-macos artifact contract"

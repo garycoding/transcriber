@@ -1,7 +1,7 @@
 name: Test
 
 # The build is the test: Transcriber has no test suite, so the required check
-# is that the app compiles and signs on a macOS runner.
+# is that the app compiles and signs and its disk image builds on a macOS runner.
 
 on:
   pull_request:
@@ -19,6 +19,8 @@ jobs:
       - uses: actions/checkout@v6
       - name: Build Transcriber.app
         run: ./build.sh
+      - name: The disk image builds and verifies
+        run: scripts/make-dmg
       - name: The app and its version are present
         run: |
           test -x Transcriber.app/Contents/MacOS/Transcriber

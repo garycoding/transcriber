@@ -176,6 +176,36 @@ func transcribe(_ input: URL, progress: @escaping (Double) -> Void, onText: @esc
     return try runWhisper(whisper, wav: wav, duration: duration, progress: progress, onText: onText)
 }
 
+/// A native, scrollable, selectable text view that cannot be edited. New text is appended
+/// in place, so a reader who is scrolling is not moved and the whole text is not laid out again.
+struct ReadOnlyText: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        let view = scroll.documentView as! NSTextView
+        view.isEditable = false
+        view.isSelectable = true
+        view.drawsBackground = false
+        view.font = NSFont.preferredFont(forTextStyle: .body)
+        view.textColor = .textColor
+        view.textContainerInset = NSSize(width: 4, height: 8)
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        let view = scroll.documentView as! NSTextView
+        let current = view.string
+        guard current != text else { return }
+        if text.hasPrefix(current), let storage = view.textStorage {
+            storage.append(NSAttributedString(string: String(text.dropFirst(current.count)),
+                                              attributes: [.font: view.font as Any, .foregroundColor: NSColor.textColor]))
+        } else {
+            view.string = text
+        }
+    }
+}
+
 struct ContentView: View {
     @State private var original = ""
     @State private var polished = ""
@@ -279,13 +309,7 @@ struct ContentView: View {
                     TextEditor(text: text).font(.body)
                 } else {
                     // While the text is still arriving: scrollable and selectable, but not editable.
-                    ScrollView {
-                        Text(text.wrappedValue)
-                            .font(.body)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                    }
+                    ReadOnlyText(text: text.wrappedValue)
                 }
             }
             .border(Color.secondary.opacity(0.3))

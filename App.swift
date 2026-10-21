@@ -181,75 +181,6 @@ func transcribe(_ input: URL, progress: @escaping (Double) -> Void, onSegment: @
     return try runWhisper(whisper, wav: wav, duration: duration, progress: progress, onSegment: onSegment)
 }
 
-/// A native, scrollable, selectable text view that cannot be edited. New text is appended
-/// in place, so a reader who is scrolling is not moved and the whole text is not laid out again.
-struct ReadOnlyText: NSViewRepresentable {
-    let text: String
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        let view = scroll.documentView as! NSTextView
-        view.isEditable = false
-        view.isSelectable = true
-        view.drawsBackground = false
-        view.font = NSFont.preferredFont(forTextStyle: .body)
-        view.textColor = .textColor
-        view.textContainerInset = NSSize(width: 4, height: 8)
-        return scroll
-    }
-
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        let view = scroll.documentView as! NSTextView
-        let current = view.string
-        guard current != text else { return }
-        if text.hasPrefix(current), let storage = view.textStorage {
-            storage.append(NSAttributedString(string: String(text.dropFirst(current.count)),
-                                              attributes: [.font: view.font as Any, .foregroundColor: NSColor.textColor]))
-        } else {
-            view.string = text
-        }
-    }
-}
-
-/// The polished text: scrollable and selectable, but not editable. New paragraphs are appended in
-/// place, and those kept as transcribed are shown in orange.
-struct PolishedText: NSViewRepresentable {
-    let parts: [PolishPart]
-
-    final class Coordinator { var applied = 0 }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        let view = scroll.documentView as! NSTextView
-        view.isEditable = false
-        view.isSelectable = true
-        view.drawsBackground = false
-        view.font = NSFont.preferredFont(forTextStyle: .body)
-        view.textColor = .textColor
-        view.textContainerInset = NSSize(width: 4, height: 8)
-        return scroll
-    }
-
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        let view = scroll.documentView as! NSTextView
-        let coordinator = context.coordinator
-        if parts.count < coordinator.applied {
-            view.string = ""
-            coordinator.applied = 0
-        }
-        guard let storage = view.textStorage else { return }
-        while coordinator.applied < parts.count {
-            let part = parts[coordinator.applied]
-            storage.append(NSAttributedString(
-                string: (coordinator.applied > 0 ? "\n\n" : "") + part.text,
-                attributes: [.font: view.font as Any, .foregroundColor: part.fallback ? NSColor.systemOrange : NSColor.textColor]))
-            coordinator.applied += 1
-        }
-    }
-}
-
 /// The file types whose audio macOS can decode without help: audio files, and the audio track of video files.
 let supportedExtensions = ["zip", "m4a", "mp3", "wav", "aif", "aiff", "aifc", "caf", "flac", "aac", "ac3", "mp2",
                            "mp4", "m4v", "mov", "3gp"]
@@ -287,6 +218,17 @@ struct ContentView: View {
     @State private var sourceBytes: Int64 = 0
     @State private var loadedZip: URL?
     @State private var savingSession = false
+    @State private var unpacking = false
+    @StateObject private var player = PlaybackController()
+    @State private var follow = true
+    @State private var scrubbing = false
+    @State private var scrubTime = 0.0
+    @State private var showVideo = true
+    @State private var map: PlaybackMap?
+    @State private var leftHighlight: NSRange?
+    @State private var rightHighlight: NSRange?
+    @State private var sessionOriginalURL: URL?
+    @State private var sessionDirectory: URL?
     @State private var polishModelLabel = ""
     @State private var summaryModelLabel = ""
     @State private var transcribeSeconds: Double?
@@ -306,6 +248,7 @@ struct ContentView: View {
             modelBanner
             polishPicker
             dropZone
+            playbackSection
             if summaryVisible {
                 Picker("", selection: $showSummaryTab) {
                     Text("Transcript").tag(false)
@@ -320,12 +263,14 @@ struct ContentView: View {
             } else {
                 HStack(spacing: 12) {
                     pane("As transcribed", text: original, complete: !transcribing, fileName: sourceName + ".txt") {
-                        ReadOnlyText(text: original)
+                        ReadOnlyText(text: original, highlight: leftHighlight, follow: follow && player.isLoaded,
+                                     onDoubleClick: { handleDoubleClick(left: true, $0) }, onUserScroll: { follow = false })
                     }
                     if polishVisible {
                         pane("Polished", text: polished, complete: !polishing, fileName: sourceName + " (polished).txt",
                              note: polishedParts.contains(where: \.fallback) ? "Orange text was left as transcribed." : nil) {
-                            PolishedText(parts: polishedParts)
+                            PolishedText(parts: polishedParts, highlight: rightHighlight, follow: follow && player.isLoaded,
+                                         onDoubleClick: { handleDoubleClick(left: false, $0) }, onUserScroll: { follow = false })
                         }
                     }
                 }
@@ -333,6 +278,16 @@ struct ContentView: View {
         }
         .padding(16)
         .frame(minWidth: 640, minHeight: 480)
+        .onChange(of: displayTime) { _ in updateHighlights() }
+        .onChange(of: player.isLoaded) { _ in updateHighlights() }
+        .onChange(of: polishing) { _ in rebuildMap() }
+        .onChange(of: transcribing) { _ in rebuildMap() }
+        .onAppear {
+            // Unpacked sessions from an earlier run are not kept.
+            if let base = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false) {
+                try? FileManager.default.removeItem(at: base.appendingPathComponent("Transcriber/Sessions"))
+            }
+        }
         .onDrop(of: [.fileURL], isTargeted: $targeted) { providers in
             guard !hasTranscription, let p = providers.first else { return false }
             _ = p.loadObject(ofClass: URL.self) { url, _ in
@@ -350,13 +305,13 @@ struct ContentView: View {
             VStack(spacing: 6) {
                 HStack {
                     Text(status).foregroundColor(.secondary)
-                    if savingSession { ProgressView().controlSize(.small) }
+                    if savingSession || unpacking { ProgressView().controlSize(.small) }
                     if hasTranscription {
                         Button("Save Session…") { saveSession() }
-                            .disabled(busy || savingSession)
+                            .disabled(busy || savingSession || unpacking)
                             .help("Save the transcript, the polished text, the summary and the original file in one zip file, to open again later")
                         Button("Discard Transcription") { discard() }
-                            .disabled(transcribing)
+                            .disabled(transcribing || unpacking)
                             .help(transcribing ? "Available when transcribing has finished" : "Clear everything so that another file can be dropped")
                     }
                 }
@@ -580,6 +535,10 @@ struct ContentView: View {
         let began = Date()
         segments = []
         sourceURL = url
+        sessionOriginalURL = nil
+        player.load(url)
+        follow = true
+        map = nil
         sourceBytes = ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.int64Value ?? 0
         loadedZip = nil
         polishModelLabel = ""
@@ -722,6 +681,80 @@ struct ContentView: View {
         summarising = false
     }
 
+    // MARK: Playback
+
+    var displayTime: Double { scrubbing ? scrubTime : player.time }
+
+    /// Builds the link between times and text, from what there is so far.
+    func rebuildMap() {
+        guard !original.isEmpty, !segments.isEmpty else { map = nil; leftHighlight = nil; rightHighlight = nil; return }
+        map = PlaybackMap(text: original, segments: segments,
+                          parts: polishedParts.map { (text: $0.text, startWord: $0.startWord, endWord: $0.endWord) })
+        updateHighlights()
+    }
+
+    func updateHighlights() {
+        guard let map, player.isLoaded else { leftHighlight = nil; rightHighlight = nil; return }
+        let w = map.word(atTime: displayTime)
+        leftHighlight = map.leftSentence(forWord: w)
+        rightHighlight = (polishVisible && !polishing) ? map.rightSentence(forWord: w) : nil
+    }
+
+    /// A double-click on a word of either text: highlight its sentence in both, and move the player and the other
+    /// text to that place.
+    func handleDoubleClick(left: Bool, _ index: Int) {
+        guard let map, player.isLoaded else { return }
+        guard let w = left ? map.word(forLeftCharacter: index) : map.word(forRightCharacter: index) else { return }
+        follow = true
+        player.seek(to: map.time(atMiddleOfWord: w), precise: true)
+        updateHighlights()
+    }
+
+    var speedLabel: String {
+        let r = Double(player.rate)
+        return (r == r.rounded() ? String(Int(r)) : String(format: "%g", r)) + "×"
+    }
+
+    /// The controls for the original audio or video, with the picture when it is a video.
+    @ViewBuilder var playbackSection: some View {
+        if player.isLoaded {
+            VStack(spacing: 6) {
+                if player.hasVideo && showVideo {
+                    VideoView(player: player.player)
+                        .frame(height: 190)
+                        .cornerRadius(6)
+                }
+                HStack(spacing: 10) {
+                    Button { player.toggle() } label: {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").frame(width: 18)
+                    }
+                    .help(player.isPlaying ? "Pause" : "Play")
+                    Text(elapsed(displayTime)).monospacedDigit().foregroundColor(.secondary).frame(width: 52, alignment: .trailing)
+                    Slider(value: Binding(get: { displayTime },
+                                          set: { scrubTime = $0; player.seek(to: $0, precise: false) }),
+                           in: 0...max(player.duration, 1),
+                           onEditingChanged: { editing in
+                               if editing { scrubTime = player.time } else { player.seek(to: scrubTime, precise: true) }
+                               scrubbing = editing
+                           })
+                    Text(elapsed(player.duration)).monospacedDigit().foregroundColor(.secondary).frame(width: 52, alignment: .leading)
+                    Menu(speedLabel) {
+                        ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { r in
+                            Button(String(format: "%g×", r)) { player.setRate(Float(r)) }
+                        }
+                    }
+                    .frame(width: 62)
+                    Toggle("Follow", isOn: $follow)
+                        .toggleStyle(.button)
+                        .help("Keep the text scrolled to the place being played. Scrolling by hand turns this off.")
+                    if player.hasVideo {
+                        Toggle("Video", isOn: $showVideo).toggleStyle(.button)
+                    }
+                }
+            }
+        }
+    }
+
     func sessionInfo() -> SessionInfo {
         SessionInfo(
             appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
@@ -733,7 +766,7 @@ struct ContentView: View {
             transcript: original,
             segments: segments,
             polish: polishedParts.isEmpty ? nil : .init(model: polishModelLabel,
-                paragraphs: polishedParts.map { SessionPart(text: $0.text, fallback: $0.fallback) }),
+                paragraphs: polishedParts.map { SessionPart(text: $0.text, fallback: $0.fallback, startWord: $0.startWord, endWord: $0.endWord) }),
             summary: summaryBody.isEmpty ? nil : .init(model: summaryModelLabel, description: summaryDescription, body: summaryBody))
     }
 
@@ -753,7 +786,7 @@ struct ContentView: View {
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
         let info = sessionInfo()
-        let source = sourceURL
+        let source = sourceURL ?? sessionOriginalURL
         let zip = loadedZip
         savingSession = true
         status = "Saving the session…"
@@ -810,7 +843,7 @@ struct ContentView: View {
                     polishSeconds = info.timings.polishSeconds
                     summarySeconds = info.timings.summarySeconds
                     descriptionSeconds = info.timings.descriptionSeconds
-                    polishedParts = (info.polish?.paragraphs ?? []).map { PolishPart(text: $0.text, fallback: $0.fallback) }
+                    polishedParts = (info.polish?.paragraphs ?? []).map { PolishPart(text: $0.text, fallback: $0.fallback, startWord: $0.startWord, endWord: $0.endWord) }
                     polished = polishedParts.map(\.text).joined(separator: "\n\n")
                     polishVisible = !polishedParts.isEmpty
                     polishModelLabel = info.polish?.model ?? ""
@@ -823,7 +856,31 @@ struct ContentView: View {
                     if let date = ISO8601DateFormatter().date(from: info.created) {
                         saved = date.formatted(date: .abbreviated, time: .shortened)
                     }
-                    status = "Opened \(zip.lastPathComponent), saved \(saved). Discard it to open or transcribe another file."
+                    rebuildMap()
+                    let message = "Opened \(zip.lastPathComponent), saved \(saved). Discard it to open or transcribe another file."
+                    status = "Unpacking the original file…"
+                    unpacking = true
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let unpacked = Result { () -> (URL, URL) in
+                            let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                                   appropriateFor: nil, create: true)
+                            let dir = base.appendingPathComponent("Transcriber/Sessions/" + UUID().uuidString)
+                            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                            return (dir, try SessionArchive.extractOriginal(from: zip, into: dir))
+                        }
+                        DispatchQueue.main.async {
+                            unpacking = false
+                            switch unpacked {
+                            case .success(let (dir, file)):
+                                sessionDirectory = dir
+                                sessionOriginalURL = file
+                                player.load(file)
+                                status = message
+                            case .failure(let e):
+                                status = message + " Its original file could not be unpacked, so it cannot be played: \(e.localizedDescription)"
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -831,6 +888,15 @@ struct ContentView: View {
 
     /// Clears everything, so that another file can be dropped.
     func discard() {
+        player.teardown()
+        if let sessionDirectory { try? FileManager.default.removeItem(at: sessionDirectory) }
+        sessionDirectory = nil
+        sessionOriginalURL = nil
+        map = nil
+        leftHighlight = nil
+        rightHighlight = nil
+        follow = true
+        scrubbing = false
         polishTask?.cancel()
         polishTask = nil
         summaryTask?.cancel()

@@ -228,6 +228,7 @@ struct ContentView: View {
     @State private var leftHighlight: NSRange?
     @State private var rightHighlight: NSRange?
     @State private var sessionOriginalURL: URL?
+    @State private var windowHeight: CGFloat = 760
     @State private var sessionDirectory: URL?
     @State private var polishModelLabel = ""
     @State private var summaryModelLabel = ""
@@ -278,7 +279,13 @@ struct ContentView: View {
         }
         .padding(16)
         .frame(minWidth: 640, minHeight: 480)
+        .background(GeometryReader { g in
+            Color.clear
+                .onAppear { windowHeight = g.size.height }
+                .onChange(of: g.size.height) { windowHeight = $0 }
+        })
         .onChange(of: displayTime) { _ in updateHighlights() }
+        .onChange(of: segments.count) { n in if transcribing && n % 4 == 0 { rebuildMap() } }
         .onChange(of: player.isLoaded) { _ in updateHighlights() }
         .onChange(of: polishing) { _ in rebuildMap() }
         .onChange(of: transcribing) { _ in rebuildMap() }
@@ -721,7 +728,7 @@ struct ContentView: View {
             VStack(spacing: 6) {
                 if player.hasVideo && showVideo {
                     VideoView(player: player.player)
-                        .frame(height: 190)
+                        .frame(height: min(220, max(110, windowHeight * 0.24)))
                         .cornerRadius(6)
                 }
                 HStack(spacing: 10) {
@@ -953,6 +960,7 @@ struct TranscriberApp: App {
     @NSApplicationDelegateAdaptor(Delegate.self) var delegate
     var body: some Scene {
         Window("Transcriber", id: "main") { ContentView() }
+            .defaultSize(width: 1000, height: 780)
             .commands {
                 CommandGroup(after: .appInfo) { LicensesMenuButton() }
                 CommandGroup(replacing: .help) { LicensesMenuButton() }

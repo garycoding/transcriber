@@ -4,6 +4,16 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+## [v0.3.0] - 2026-10-20
+
+### Highlights
+
+_Highlights were not generated for this release._
+
+### Features
+
+- Save a transcription as a zip and open it again (#12)
+
 ## [v0.2.0] - 2026-10-20
 
 ### Highlights
